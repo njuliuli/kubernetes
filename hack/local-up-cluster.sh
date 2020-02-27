@@ -229,6 +229,8 @@ RUNTIME_REQUEST_TIMEOUT=${RUNTIME_REQUEST_TIMEOUT:-"2m"}
 IMAGE_SERVICE_ENDPOINT=${IMAGE_SERVICE_ENDPOINT:-""}
 CHAOS_CHANCE=${CHAOS_CHANCE:-0.0}
 CPU_CFS_QUOTA=${CPU_CFS_QUOTA:-true}
+CPU_MANAGER_POLICY=${CPU_MANAGER_POLICY:-"static"}
+RESERVED_CPUS=${RESERVED_CPUS:-"0-3"}
 ENABLE_HOSTPATH_PROVISIONER=${ENABLE_HOSTPATH_PROVISIONER:-"false"}
 CLAIM_BINDER_SYNC_PERIOD=${CLAIM_BINDER_SYNC_PERIOD:-"15s"} # current k8s default
 ENABLE_CONTROLLER_ATTACH_DETACH=${ENABLE_CONTROLLER_ATTACH_DETACH:-"true"} # current default
@@ -763,6 +765,8 @@ function start_kubelet {
       --kubeconfig "${CERT_DIR}"/kubelet.kubeconfig
       "--feature-gates=${FEATURE_GATES}"
       "--cpu-cfs-quota=${CPU_CFS_QUOTA}"
+      "--cpu-manager-policy=${CPU_MANAGER_POLICY}"
+      "--reserved-cpus=${RESERVED_CPUS}"
       "--enable-controller-attach-detach=${ENABLE_CONTROLLER_ATTACH_DETACH}"
       "--cgroups-per-qos=${CGROUPS_PER_QOS}"
       "--cgroup-driver=${CGROUP_DRIVER}"
