@@ -3050,7 +3050,7 @@ type PodSpec struct {
 	TopologySpreadConstraints []TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty" patchStrategy:"merge" patchMergeKey:"topologyKey" protobuf:"bytes,33,opt,name=topologySpreadConstraints"`
 	// Policy describe how the pod is scheduled in the node.
 	// +optional
-	Policy string `json:"policy,omitempty" protobuf:"bytes,34,opt,name=policy"`
+	Policy string `json:"policy,omitempty" protobuf:"bytes,35,opt,name=policy"`
 }
 
 type UnsatisfiableConstraintAction string
