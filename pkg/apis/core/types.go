@@ -2770,6 +2770,9 @@ type PodSpec struct {
 	// All topologySpreadConstraints are ANDed.
 	// +optional
 	TopologySpreadConstraints []TopologySpreadConstraint
+	// Policy describe how the pod is scheduled in the node.
+	// +optional
+	Policy string
 }
 
 // HostAlias holds the mapping between IP and hostnames that will be injected as an entry in the

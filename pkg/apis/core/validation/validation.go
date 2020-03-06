@@ -31,7 +31,7 @@ import (
 
 	"k8s.io/klog"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -3237,6 +3237,10 @@ func ValidatePodSpec(spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
 
 	if spec.Overhead != nil {
 		allErrs = append(allErrs, validateOverhead(spec.Overhead, fldPath.Child("overhead"))...)
+	}
+
+	if len(spec.Policy) > 0 {
+		allErrs = append(allErrs, ValidateDNS1123Label(spec.Policy, fldPath.Child("policy"))...)
 	}
 
 	return allErrs
