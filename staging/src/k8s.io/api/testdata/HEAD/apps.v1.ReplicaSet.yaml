@@ -689,6 +689,7 @@ spec:
         "359": "360"
       overhead:
         4'ď曕椐敛n湙: "310"
+      policy: "434"
       preemptionPolicy: '!ń1ċƹ|慼櫁色苆试揯遐'
       priority: -1852730577
       priorityClassName: "421"
@@ -941,8 +942,8 @@ status:
   availableReplicas: -1469601144
   conditions:
   - lastTransitionTime: "2469-07-10T03:20:34Z"
-    message: "435"
-    reason: "434"
+    message: "436"
+    reason: "435"
     status: ɻ猶N嫡牿咸Ǻ潑鶋洅啶'ƈoIǢ龞瞯å
     type: ɡj瓇ɽ丿YƄZZ塖bʘ
   fullyLabeledReplicas: 138911331

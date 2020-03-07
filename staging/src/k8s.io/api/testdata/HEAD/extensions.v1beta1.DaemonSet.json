@@ -1374,7 +1374,8 @@
               ]
             }
           }
-        ]
+        ],
+        "policy": "433"
       }
     },
     "updateStrategy": {
@@ -1402,8 +1403,8 @@
         "type": "Ƅ抄3昞财Î嘝zʄ",
         "status": "\u003ec緍k¢茤Ƣǟ½灶du汎mō6µɑ",
         "lastTransitionTime": "2196-03-13T21:02:11Z",
-        "reason": "433",
-        "message": "434"
+        "reason": "434",
+        "message": "435"
       }
     ]
   }
