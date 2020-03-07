@@ -1624,8 +1624,6 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
 			if !pcm.Exists(pod) {
 
-				klog.Infof("[liliu] For pod %q, pod.Spec: %+v", pod.Name, pod.Spec)
-
 				if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 					klog.V(2).Infof("Failed to update QoS cgroups while syncing pod: %v", err)
 				}
