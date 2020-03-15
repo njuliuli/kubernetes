@@ -29,6 +29,7 @@ go_library(
         "//pkg/kubelet/apis/podresources/v1alpha1:go_default_library",
         "//pkg/kubelet/cm/cpumanager:go_default_library",
         "//pkg/kubelet/cm/cpuset:go_default_library",
+        "//pkg/kubelet/cm/policymanager:go_default_library",
         "//pkg/kubelet/cm/topologymanager:go_default_library",
         "//pkg/kubelet/config:go_default_library",
         "//pkg/kubelet/container:go_default_library",
@@ -211,6 +212,7 @@ filegroup(
     srcs = [
         ":package-srcs",
         "//pkg/kubelet/cm/cpumanager:all-srcs",
+        "//pkg/kubelet/cm/policymanager:all-srcs",
         "//pkg/kubelet/cm/cpuset:all-srcs",
         "//pkg/kubelet/cm/devicemanager:all-srcs",
         "//pkg/kubelet/cm/topologymanager:all-srcs",

@@ -832,6 +832,12 @@ func (kl *Kubelet) killPod(pod *v1.Pod, runningPod *kubecontainer.Pod, status *k
 	if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 		klog.V(2).Infof("Failed to update QoS cgroups while killing pod: %v", err)
 	}
+
+	// Remove pod from PolicyManager, and update cgroup values accordingly.
+	// All exceptions of PolicyManager is logged and will not crash kubelet and other components.
+	policyManager := kl.containerManager.GetPolicyManager()
+	policyManager.RemovePod(pod)
+
 	return nil
 }
 

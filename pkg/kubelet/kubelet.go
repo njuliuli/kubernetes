@@ -1630,6 +1630,11 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 					kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToCreatePodContainer, "unable to ensure pod container exists: %v", err)
 					return fmt.Errorf("failed to ensure that the pod: %v cgroups exist and are correctly applied: %v", pod.UID, err)
 				}
+
+				// Add pod to PolicyManager, and update cgroup values accordingly.
+				// All exceptions of PolicyManager is logged and will not crash kubelet and other components.
+				policyManager := kl.containerManager.GetPolicyManager()
+				policyManager.AddPod(pod)
 			}
 		}
 	}

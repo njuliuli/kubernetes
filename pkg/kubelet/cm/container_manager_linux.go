@@ -52,6 +52,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
+	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	cmutil "k8s.io/kubernetes/pkg/kubelet/cm/util"
 	"k8s.io/kubernetes/pkg/kubelet/config"
@@ -135,6 +136,8 @@ type containerManagerImpl struct {
 	cpuManager cpumanager.Manager
 	// Interface for Topology resource co-ordination
 	topologyManager topologymanager.Manager
+	// Interface for pod level cgroup values management
+	policyManager policymanager.PolicyManager
 }
 
 type features struct {
@@ -330,6 +333,13 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 			return nil, err
 		}
 		cm.topologyManager.AddHintProvider(cm.cpuManager)
+	}
+
+	// Initialize policy manager
+	cm.policyManager, err = policymanager.NewPolicyManager()
+	if err != nil {
+		klog.Errorf("[policymanager] Failed to initialize policy manager: %v", err)
+		return nil, err
 	}
 
 	return cm, nil
@@ -638,6 +648,9 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 		return err
 	}
 
+	// Starts policy manager.
+	cm.policyManager.Start()
+
 	return nil
 }
 
@@ -669,6 +682,10 @@ func (cm *containerManagerImpl) UpdatePluginResources(node *schedulernodeinfo.No
 
 func (cm *containerManagerImpl) GetTopologyPodAdmitHandler() topologymanager.Manager {
 	return cm.topologyManager
+}
+
+func (cm *containerManagerImpl) GetPolicyManager() policymanager.PolicyManager {
+	return cm.policyManager
 }
 
 func (cm *containerManagerImpl) SystemCgroupsLimit() v1.ResourceList {
