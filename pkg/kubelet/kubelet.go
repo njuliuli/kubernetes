@@ -1632,9 +1632,10 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 				}
 
 				// Add pod to PolicyManager, and update cgroup values accordingly.
-				// All exceptions of PolicyManager is logged and will not crash kubelet and other components.
 				policyManager := kl.containerManager.GetPolicyManager()
-				policyManager.AddPod(pod)
+				if err := policyManager.AddPod(pod); err != nil {
+					klog.V(2).Infof("Failed to add pod to policy manager: %v", err)
+				}
 			}
 		}
 	}

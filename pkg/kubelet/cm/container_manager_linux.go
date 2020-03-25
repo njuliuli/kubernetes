@@ -649,7 +649,9 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	}
 
 	// Starts policy manager.
-	cm.policyManager.Start()
+	if err := cm.policyManager.Start(); err != nil {
+		return err
+	}
 
 	return nil
 }
