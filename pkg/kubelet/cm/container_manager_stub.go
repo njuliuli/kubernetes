@@ -123,7 +123,7 @@ func (cm *containerManagerStub) GetTopologyPodAdmitHandler() topologymanager.Man
 }
 
 func (cm *containerManagerStub) GetPolicyManager() policymanager.PolicyManager {
-	return nil
+	return &policymanager.PolicyManagerStub{}
 }
 
 func NewStubContainerManager() ContainerManager {
