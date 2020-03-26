@@ -20,25 +20,23 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	v1 "k8s.io/api/core/v1"
 )
 
 func TestNewPolicyManager(t *testing.T) {
 	_, err := NewPolicyManager()
 
-	if err != nil {
-		t.Errorf("Creating PolicyManager failed")
-	}
+	assert.Nil(t, err, "Creating PolicyManager failed")
 }
 
 func TestPolicyManagerStart(t *testing.T) {
-	policyManager, _ := NewPolicyManager()
+	pm, _ := NewPolicyManager()
 
-	err := policyManager.Start()
+	err := pm.Start()
 
-	if err != nil {
-		t.Errorf("Starting PolicyManager failed")
-	}
+	assert.Nil(t, err, "Starting PolicyManager failed")
 }
 
 func TestPolicyManagerAddPod(t *testing.T) {
@@ -61,13 +59,15 @@ func TestPolicyManagerAddPod(t *testing.T) {
 
 	for _, testCase := range testCaseArray {
 		t.Run(testCase.description, func(t *testing.T) {
-			policyManager := policyManagerImpl{}
+			pm := policyManagerImpl{}
 
-			err := policyManager.AddPod(testCase.pod)
+			err := pm.AddPod(testCase.pod)
 
-			// We only check error behavior, but not the error string
-			if testCase.expErr == nil && err != nil {
-				t.Errorf("Expect error %v, but got %v", testCase.expErr, err)
+			// We only check error behavior, not the error string
+			if testCase.expErr == nil {
+				assert.Nil(t, err)
+			} else {
+				assert.Error(t, err)
 			}
 		})
 	}
@@ -93,12 +93,14 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 
 	for _, testCase := range testCaseArray {
 		t.Run(testCase.description, func(t *testing.T) {
-			policyManager := policyManagerImpl{}
+			pm := policyManagerImpl{}
 
-			err := policyManager.RemovePod(testCase.pod)
+			err := pm.RemovePod(testCase.pod)
 
-			if testCase.expErr == nil && err != nil {
-				t.Errorf("Expect error %v, but got %v", testCase.expErr, err)
+			if testCase.expErr == nil {
+				assert.Nil(t, err)
+			} else {
+				assert.Error(t, err)
 			}
 		})
 	}

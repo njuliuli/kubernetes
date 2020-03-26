@@ -23,56 +23,42 @@ import (
 	"k8s.io/klog"
 )
 
-// PolicyManager interface provides methods for Kubelet to manage pod level cgroup values.
-type PolicyManager interface {
-	Start() error
-	AddPod(pod *v1.Pod) error
-	RemovePod(pod *v1.Pod) error
-}
-
 type policyManagerImpl struct {
 }
 
 var _ PolicyManager = &policyManagerImpl{}
 
-// NewPolicyManager creates policy manager
+// NewPolicyManager creates PolicyManager for pod level cgroup values
 func NewPolicyManager() (PolicyManager, error) {
-	klog.Infof("[policymanager] Create PolicyManager")
+	klog.Infof("[policymanager] Create policyManagerImpl")
 
 	policyManager := &policyManagerImpl{}
 
 	return policyManager, nil
 }
 
-// Start is called during Kubelet initialization.
 func (p *policyManagerImpl) Start() (rerr error) {
-	klog.Infof("[policymanager] Start PolicyManager, %+v", p)
+	klog.Infof("[policymanager] Start policyManagerImpl, %+v", p)
 
 	return nil
 }
 
-// Add a new pod to policy manager,
-// as the exported API, it may be called concurrently
 func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	if pod == nil {
-		return fmt.Errorf("[policymanager] Pod not exist")
-
+		return fmt.Errorf("pod not exist")
 	}
 
-	klog.Infof("[policymanager] Add pod to PolicyManager, %q", pod.Name)
+	klog.Infof("[policymanager] Add pod to policyManagerImpl, %q", pod.Name)
 
 	return nil
 }
 
-// Remove an existing pod from policy manager
-// as the exported API, it may be called concurrently
 func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 	if pod == nil {
-		return fmt.Errorf("[policymanager] Pod not exist")
-
+		return fmt.Errorf("pod not exist")
 	}
 
-	klog.Infof("[policymanager] Remove pod from PolicyManager, %q", pod.Name)
+	klog.Infof("[policymanager] Remove pod from policyManagerImpl, %q", pod.Name)
 
 	return nil
 }

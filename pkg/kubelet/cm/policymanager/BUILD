@@ -3,6 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "go_default_library",
     srcs = [
+        "policy_manager.go",
         "policy_manager_linux.go",
         "policy_manager_stub.go",
     ],
@@ -42,9 +43,11 @@ go_test(
     deps = select({
         "@io_bazel_rules_go//go/platform:android": [
             "//staging/src/k8s.io/api/core/v1:go_default_library",
+            "//vendor/github.com/stretchr/testify/assert:go_default_library",
         ],
         "@io_bazel_rules_go//go/platform:linux": [
             "//staging/src/k8s.io/api/core/v1:go_default_library",
+            "//vendor/github.com/stretchr/testify/assert:go_default_library",
         ],
         "//conditions:default": [],
     }),
