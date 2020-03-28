@@ -21,9 +21,12 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup"
 )
 
 type policyManagerImpl struct {
+	// stateArray stores all states for each cgroup value
+	cgroupArray []cgroup.Cgroup
 }
 
 var _ PolicyManager = &policyManagerImpl{}
@@ -32,13 +35,28 @@ var _ PolicyManager = &policyManagerImpl{}
 func NewPolicyManager() (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
-	policyManager := &policyManagerImpl{}
+	var ca []cgroup.Cgroup
+	if ccs, err := cgroup.NewCgroupCPUShares(); err != nil {
+		return nil, fmt.Errorf("fail to create cgroupCPUShares, %q", err)
+	} else {
+		ca = append(ca, ccs)
+	}
 
-	return policyManager, nil
+	pm := &policyManagerImpl{
+		cgroupArray: ca,
+	}
+
+	return pm, nil
 }
 
 func (p *policyManagerImpl) Start() (rerr error) {
 	klog.Infof("[policymanager] Start policyManagerImpl, %+v", p)
+
+	for _, c := range p.cgroupArray {
+		if err := c.Start(); err != nil {
+			return fmt.Errorf("fail to start cgroupCPUShares; %q", err)
+		}
+	}
 
 	return nil
 }
@@ -47,8 +65,13 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
-
 	klog.Infof("[policymanager] Add pod to policyManagerImpl, %q", pod.Name)
+
+	for _, c := range p.cgroupArray {
+		if err := c.AddPod(pod); err != nil {
+			return fmt.Errorf("fail to add pod to policyManagerImpl; %q", err)
+		}
+	}
 
 	return nil
 }
@@ -57,8 +80,13 @@ func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
-
 	klog.Infof("[policymanager] Remove pod from policyManagerImpl, %q", pod.Name)
+
+	for _, c := range p.cgroupArray {
+		if err := c.RemovePod(pod); err != nil {
+			return fmt.Errorf("fail to remove pod from policyManagerImpl; %q", err)
+		}
+	}
 
 	return nil
 }

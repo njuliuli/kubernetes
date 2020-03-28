@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup"
+	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup/mocks"
 )
 
 func TestNewPolicyManager(t *testing.T) {
@@ -32,42 +34,87 @@ func TestNewPolicyManager(t *testing.T) {
 }
 
 func TestPolicyManagerStart(t *testing.T) {
-	pm, _ := NewPolicyManager()
+	testCaseArray := []struct {
+		description      string
+		expErrFromCgroup error
+		expErr           error
+	}{
+		{
+			description:      "Success, simple",
+			expErrFromCgroup: nil,
+			expErr:           nil,
+		},
+		{
+			description:      "Fail, error from Cgroup.Start()",
+			expErrFromCgroup: fmt.Errorf("fake error"),
+			expErr:           fmt.Errorf("fake error"),
+		},
+	}
 
-	err := pm.Start()
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			cgroupMock := new(mocks.Cgroup)
+			cgroupMock.On("Start").Return(tc.expErrFromCgroup)
+			pm := policyManagerImpl{
+				cgroupArray: []cgroup.Cgroup{cgroupMock},
+			}
 
-	assert.Nil(t, err, "Starting PolicyManager failed")
+			err := pm.Start()
+
+			if tc.expErr == nil {
+				assert.Nil(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+			cgroupMock.AssertExpectations(t)
+		})
+	}
 }
 
 func TestPolicyManagerAddPod(t *testing.T) {
 	testCaseArray := []struct {
-		description string
-		pod         *v1.Pod
-		expErr      error
+		description      string
+		pod              *v1.Pod
+		expErrFromCgroup error
+		expErr           error
 	}{
 		{
-			description: "Success, simple",
-			pod:         &v1.Pod{},
-			expErr:      nil,
+			description:      "Success, simple",
+			pod:              &v1.Pod{},
+			expErrFromCgroup: nil,
+			expErr:           nil,
 		},
 		{
-			description: "Fail, pod not existed",
-			pod:         nil,
-			expErr:      fmt.Errorf("Pod not exist"),
+			description:      "Fail, pod not existed",
+			pod:              nil,
+			expErrFromCgroup: nil,
+			expErr:           fmt.Errorf("fake error"),
+		},
+		{
+			description:      "Fail, error from Cgroup.AddPod()",
+			pod:              &v1.Pod{},
+			expErrFromCgroup: fmt.Errorf("fake error"),
+			expErr:           fmt.Errorf("fake error"),
 		},
 	}
 
-	for _, testCase := range testCaseArray {
-		t.Run(testCase.description, func(t *testing.T) {
-			pm := policyManagerImpl{}
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			cgroupMock := new(mocks.Cgroup)
+			cgroupMock.On("AddPod", tc.pod).Return(tc.expErrFromCgroup)
+			pm := policyManagerImpl{
+				cgroupArray: []cgroup.Cgroup{cgroupMock},
+			}
 
-			err := pm.AddPod(testCase.pod)
+			err := pm.AddPod(tc.pod)
 
-			// We only check error behavior, not the error string
-			if testCase.expErr == nil {
+			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
+			}
+			if tc.pod != nil {
+				cgroupMock.AssertExpectations(t)
 			}
 		})
 	}
@@ -75,32 +122,48 @@ func TestPolicyManagerAddPod(t *testing.T) {
 
 func TestPolicyManagerRemovePod(t *testing.T) {
 	testCaseArray := []struct {
-		description string
-		pod         *v1.Pod
-		expErr      error
+		description      string
+		pod              *v1.Pod
+		expErrFromCgroup error
+		expErr           error
 	}{
 		{
-			description: "Success, simple",
-			pod:         &v1.Pod{},
-			expErr:      nil,
+			description:      "Success, simple",
+			pod:              &v1.Pod{},
+			expErrFromCgroup: nil,
+			expErr:           nil,
 		},
 		{
-			description: "Fail, pod not existed",
-			pod:         nil,
-			expErr:      fmt.Errorf("Pod not exist"),
+			description:      "Fail, pod not existed",
+			pod:              nil,
+			expErrFromCgroup: nil,
+			expErr:           fmt.Errorf("fake error"),
+		},
+		{
+			description:      "Fail, error from Cgroup.RemovePod()",
+			pod:              &v1.Pod{},
+			expErrFromCgroup: fmt.Errorf("fake error"),
+			expErr:           fmt.Errorf("fake error"),
 		},
 	}
 
-	for _, testCase := range testCaseArray {
-		t.Run(testCase.description, func(t *testing.T) {
-			pm := policyManagerImpl{}
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			cgroupMock := new(mocks.Cgroup)
+			cgroupMock.On("RemovePod", tc.pod).Return(tc.expErrFromCgroup)
+			pm := policyManagerImpl{
+				cgroupArray: []cgroup.Cgroup{cgroupMock},
+			}
 
-			err := pm.RemovePod(testCase.pod)
+			err := pm.RemovePod(tc.pod)
 
-			if testCase.expErr == nil {
+			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
+			}
+			if tc.pod != nil {
+				cgroupMock.AssertExpectations(t)
 			}
 		})
 	}

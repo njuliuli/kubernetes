@@ -1,0 +1,12 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "go_default_library",
+    srcs = ["Cgroup.go"],
+    importpath = "k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup/mocks",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//staging/src/k8s.io/api/core/v1:go_default_library",
+        "//vendor/github.com/stretchr/testify/mock:go_default_library",
+    ],
+)
