@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package policymanager
+package cm
 
 import (
 	"fmt"
@@ -23,8 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup"
-	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup/mocks"
+	"k8s.io/kubernetes/pkg/kubelet/cm/mocks"
 )
 
 func TestNewPolicyManager(t *testing.T) {
@@ -45,7 +44,7 @@ func TestPolicyManagerStart(t *testing.T) {
 			expErr:           nil,
 		},
 		{
-			description:      "Fail, error from Cgroup.Start()",
+			description:      "Fail, error from Start()",
 			expErrFromCgroup: fmt.Errorf("fake error"),
 			expErr:           fmt.Errorf("fake error"),
 		},
@@ -56,7 +55,7 @@ func TestPolicyManagerStart(t *testing.T) {
 			cgroupMock := new(mocks.Cgroup)
 			cgroupMock.On("Start").Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []cgroup.Cgroup{cgroupMock},
+				cgroupArray: []Cgroup{cgroupMock},
 			}
 
 			err := pm.Start()
@@ -91,7 +90,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			expErr:           fmt.Errorf("fake error"),
 		},
 		{
-			description:      "Fail, error from Cgroup.AddPod()",
+			description:      "Fail, error from AddPod()",
 			pod:              &v1.Pod{},
 			expErrFromCgroup: fmt.Errorf("fake error"),
 			expErr:           fmt.Errorf("fake error"),
@@ -103,7 +102,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			cgroupMock := new(mocks.Cgroup)
 			cgroupMock.On("AddPod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []cgroup.Cgroup{cgroupMock},
+				cgroupArray: []Cgroup{cgroupMock},
 			}
 
 			err := pm.AddPod(tc.pod)
@@ -140,7 +139,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			expErr:           fmt.Errorf("fake error"),
 		},
 		{
-			description:      "Fail, error from Cgroup.RemovePod()",
+			description:      "Fail, error from RemovePod()",
 			pod:              &v1.Pod{},
 			expErrFromCgroup: fmt.Errorf("fake error"),
 			expErr:           fmt.Errorf("fake error"),
@@ -152,7 +151,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			cgroupMock := new(mocks.Cgroup)
 			cgroupMock.On("RemovePod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []cgroup.Cgroup{cgroupMock},
+				cgroupArray: []Cgroup{cgroupMock},
 			}
 
 			err := pm.RemovePod(tc.pod)

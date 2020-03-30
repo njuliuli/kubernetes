@@ -14,27 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package policymanager
+package cm
 
-import v1 "k8s.io/api/core/v1"
+import (
+	v1 "k8s.io/api/core/v1"
+)
 
-// PolicyManagerStub is the test stub for PolicyManager
-type PolicyManagerStub struct {
-}
-
-var _ PolicyManager = &PolicyManagerStub{}
-
-// Start is the test stub for success run
-func (m *PolicyManagerStub) Start() (rerr error) {
-	return nil
-}
-
-// AddPod is the test stub for success run
-func (m *PolicyManagerStub) AddPod(pod *v1.Pod) (rerr error) {
-	return nil
-}
-
-// RemovePod is the test stub for success run
-func (m *PolicyManagerStub) RemovePod(pod *v1.Pod) (rerr error) {
-	return nil
+// Cgroup interface provides methods for Kubelet to manage pod level cgroup values.
+type Cgroup interface {
+	// Start is called during PolicyManager initialization.
+	Start() error
+	// Add a new pod to State, only called by PolicyManager,
+	// being idempotent
+	AddPod(pod *v1.Pod) error
+	// Remove an existing pod from policy manager, only called by PolicyManager
+	// being idempotent
+	RemovePod(pod *v1.Pod) error
 }

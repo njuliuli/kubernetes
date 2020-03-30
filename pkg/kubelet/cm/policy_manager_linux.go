@@ -14,19 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package policymanager
+package cm
 
 import (
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager/cgroup"
 )
 
 type policyManagerImpl struct {
 	// stateArray stores all states for each cgroup value
-	cgroupArray []cgroup.Cgroup
+	cgroupArray []Cgroup
 }
 
 var _ PolicyManager = &policyManagerImpl{}
@@ -35,8 +34,8 @@ var _ PolicyManager = &policyManagerImpl{}
 func NewPolicyManager() (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
-	var ca []cgroup.Cgroup
-	if ccs, err := cgroup.NewCgroupCPUShares(); err != nil {
+	var ca []Cgroup
+	if ccs, err := NewCgroupCPUShares(); err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUShares, %q", err)
 	} else {
 		ca = append(ca, ccs)

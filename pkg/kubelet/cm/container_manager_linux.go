@@ -52,7 +52,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
-	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	cmutil "k8s.io/kubernetes/pkg/kubelet/cm/util"
 	"k8s.io/kubernetes/pkg/kubelet/config"
@@ -137,7 +136,7 @@ type containerManagerImpl struct {
 	// Interface for Topology resource co-ordination
 	topologyManager topologymanager.Manager
 	// Interface for pod level cgroup values management
-	policyManager policymanager.PolicyManager
+	policyManager PolicyManager
 }
 
 type features struct {
@@ -336,7 +335,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	// Initialize policy manager
-	cm.policyManager, err = policymanager.NewPolicyManager()
+	cm.policyManager, err = NewPolicyManager()
 	if err != nil {
 		klog.Errorf("[policymanager] Failed to initialize policy manager: %v", err)
 		return nil, err
@@ -686,7 +685,7 @@ func (cm *containerManagerImpl) GetTopologyPodAdmitHandler() topologymanager.Man
 	return cm.topologyManager
 }
 
-func (cm *containerManagerImpl) GetPolicyManager() policymanager.PolicyManager {
+func (cm *containerManagerImpl) GetPolicyManager() PolicyManager {
 	return cm.policyManager
 }
 

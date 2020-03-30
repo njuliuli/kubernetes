@@ -25,7 +25,6 @@ import (
 	internalapi "k8s.io/cri-api/pkg/apis"
 	podresourcesapi "k8s.io/kubernetes/pkg/kubelet/apis/podresources/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
-	"k8s.io/kubernetes/pkg/kubelet/cm/policymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -116,7 +115,7 @@ type ContainerManager interface {
 	GetTopologyPodAdmitHandler() topologymanager.Manager
 
 	// GetPolicyManager returns an instance of the PolicyManager for Pod Cgroup values maintainance
-	GetPolicyManager() policymanager.PolicyManager
+	GetPolicyManager() PolicyManager
 }
 
 type NodeConfig struct {

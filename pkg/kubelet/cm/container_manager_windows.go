@@ -182,6 +182,6 @@ func (cm *containerManagerImpl) GetTopologyPodAdmitHandler() topologymanager.Man
 	return nil
 }
 
-func (cm *containerManagerImpl) GetPolicyManager() policymanager.PolicyManager {
+func (cm *containerManagerImpl) GetPolicyManager() PolicyManager {
 	return nil
 }
