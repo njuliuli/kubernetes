@@ -20,10 +20,13 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog"
 )
 
 type cgroupCPUShares struct {
+	// Track all pods added to cgroupCPUShares, set of pod.UID
+	podSet sets.String
 }
 
 var _ Cgroup = &cgroupCPUShares{}
@@ -32,7 +35,9 @@ var _ Cgroup = &cgroupCPUShares{}
 func NewCgroupCPUShares() (Cgroup, error) {
 	klog.Infof("[policymanager] Create cgroupCPUShares")
 
-	ccs := &cgroupCPUShares{}
+	ccs := &cgroupCPUShares{
+		podSet: sets.NewString(),
+	}
 
 	return ccs, nil
 }
@@ -48,7 +53,14 @@ func (ccs *cgroupCPUShares) AddPod(pod *v1.Pod) (rerr error) {
 		return fmt.Errorf("pod not exist")
 	}
 
-	klog.Infof("[policymanager] Add pod to cgroupCPUShares, %q", pod.Name)
+	klog.Infof("[policymanager] Add pod (Name = %q) to cgroupCPUShares", pod.Name)
+
+	// A pod can only be added once, update is not supported for now
+	podUID := string(pod.UID)
+	if ccs.podSet.Has(podUID) {
+		return fmt.Errorf("pod (Name = %q) already added to cgroupCPUShares", pod.Name)
+	}
+	ccs.podSet.Insert(podUID)
 
 	return nil
 }
@@ -59,6 +71,11 @@ func (ccs *cgroupCPUShares) RemovePod(pod *v1.Pod) (rerr error) {
 	}
 
 	klog.Infof("[policymanager] Remove pod from cgroupCPUShares, %q", pod.Name)
+
+	if !ccs.podSet.Has(string(pod.UID)) {
+		return fmt.Errorf("pod (Name = %q) not added to cgroupCPUShares yet", pod.Name)
+	}
+	ccs.podSet.Delete(string(pod.UID))
 
 	return nil
 }
