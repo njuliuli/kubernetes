@@ -17,6 +17,7 @@ limitations under the License.
 package oom
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,10 @@ import (
 
 // TestBasic verifies that the OOMWatch works without error.
 func TestBasic(t *testing.T) {
+	if os.Getenv("USER") != "root" {
+		t.Skip("Skip testing pkg/kubelet/oom for unprivileged user")
+	}
+
 	fakeRecorder := &record.FakeRecorder{}
 	node := &v1.ObjectReference{}
 	oomWatcher := NewWatcher(fakeRecorder)
