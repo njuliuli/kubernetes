@@ -4,7 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "cgroup.go",
-        "cgroup_cpu_shares_linux.go",
+        "cgroup_cpu_cfs_linux.go",
         "cgroup_manager_linux.go",
         "cgroup_manager_unsupported.go",
         "container_manager.go",
@@ -167,7 +167,7 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
-        "cgroup_cpu_shares_linux_test.go",
+        "cgroup_cpu_cfs_linux_test.go",
         "cgroup_manager_linux_test.go",
         "cgroup_manager_test.go",
         "container_manager_linux_test.go",
