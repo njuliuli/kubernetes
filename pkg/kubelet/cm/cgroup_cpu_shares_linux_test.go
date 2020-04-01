@@ -22,154 +22,332 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-func TestNewCgroupCPUShares(t *testing.T) {
-	_, err := NewCgroupCPUShares()
-
-	assert.Nil(t, err, "Creating cgroupCPUShares failed")
+// Generate default cgroupCPUCFS
+func generateEmptyCgroupCPUCFS() *cgroupCPUCFS {
+	return &cgroupCPUCFS{
+		podSet:         sets.NewString(),
+		podToCPUShares: make(map[string]uint64),
+		podToCPUQuota:  make(map[string]int64),
+		podToCPUPeriod: make(map[string]uint64),
+	}
 }
 
-func TestCgroupCPUSharesStart(t *testing.T) {
-	ccs, _ := NewCgroupCPUShares()
+// Generate pod with given fields set
+func generatePod(uid, cpuRequest, cpuLimit string) *v1.Pod {
+	rr := v1.ResourceRequirements{}
+	if cpuRequest != "" {
+		rr.Requests = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuRequest),
+		}
+	}
+	if cpuLimit != "" {
+		rr.Limits = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuLimit),
+		}
+	}
 
-	err := ccs.Start()
-
-	assert.Nil(t, err, "Starting cgroupCPUShares failed")
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: types.UID(uid),
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: rr,
+				},
+			},
+		},
+	}
 }
 
-func TestCgroupCPUSharesAddPod(t *testing.T) {
+func TestNewCgroupCPUCFS(t *testing.T) {
+	_, err := NewCgroupCPUCFS()
+
+	assert.Nil(t, err, "Creating cgroupCPUCFS failed")
+}
+
+func TestCgroupCPUCFSStart(t *testing.T) {
+	ccc, _ := NewCgroupCPUCFS()
+
+	err := ccc.Start()
+
+	assert.Nil(t, err, "Starting cgroupCPUCFS failed")
+}
+
+// Now we only handle simple cases.
+// Cases not test:
+// (1) invalid pod with a container with request > limit (not empty),
+// which should be validated by protobuf.
+// (2) some corner cases depends on const like CPUSharesMin,
+// for example, cpuRequest -> cpuShares < CPUSharesMin
+// (3) TODO(li) pod with multiple containers,
+// which may need different handling than qosClass in current kubernetes
+func TestCgroupCPUCFSAddPod(t *testing.T) {
+	cpuSmall := "100m"
+	cpuSmallShare := uint64(102)
+	cpuSmallQuota := int64(10000)
+	cpuLarge := "200m"
+	cpuLargeQuota := int64(20000)
+
 	testCaseArray := []struct {
 		description string
-		ccsBefore   *cgroupCPUShares
+		cccBefore   *cgroupCPUCFS
 		pod         *v1.Pod
-		ccsAfter    *cgroupCPUShares
+		cccAfter    *cgroupCPUCFS
 		expErr      error
 	}{
 		{
-			description: "Success, simple",
-			ccsBefore: &cgroupCPUShares{
-				podSet: sets.NewString(),
-			},
-			pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					UID: "1",
-				},
-			},
-			expErr: nil,
-			ccsAfter: &cgroupCPUShares{
-				podSet: sets.NewString("1"),
-			},
-		},
-		{
 			description: "Fail, pod not existed",
-			ccsBefore: &cgroupCPUShares{
-				podSet: sets.NewString(),
-			},
-			pod:    nil,
-			expErr: fmt.Errorf("fake error"),
-			ccsAfter: &cgroupCPUShares{
-				podSet: sets.NewString(),
-			},
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         nil,
+			expErr:      fmt.Errorf("fake error"),
+			cccAfter:    generateEmptyCgroupCPUCFS(),
 		},
 		{
 			description: "Fail, pod already added",
-			ccsBefore: &cgroupCPUShares{
-				podSet: sets.NewString("1"),
+			cccBefore: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: make(map[string]uint64),
+				podToCPUQuota:  make(map[string]int64),
+				podToCPUPeriod: make(map[string]uint64),
 			},
-			pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					UID: "1",
+			pod:    generatePod("1", "", ""),
+			expErr: fmt.Errorf("fake error"),
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: make(map[string]uint64),
+				podToCPUQuota:  make(map[string]int64),
+				podToCPUPeriod: make(map[string]uint64),
+			},
+		},
+		{
+			description: "Success, request == limit",
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         generatePod("1", cpuSmall, cpuSmall),
+			expErr:      nil,
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
+				podToCPUQuota:  map[string]int64{"1": cpuSmallQuota},
+				podToCPUPeriod: map[string]uint64{"1": CPUPeriodDefault},
+			},
+		},
+		{
+			description: "Success, request < limit",
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         generatePod("1", cpuSmall, cpuLarge),
+			expErr:      nil,
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
+				podToCPUQuota:  map[string]int64{"1": cpuLargeQuota},
+				podToCPUPeriod: map[string]uint64{"1": CPUPeriodDefault},
+			},
+		},
+		{
+			description: "Success, request (empty), limit (not empty)",
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         generatePod("1", "", cpuLarge),
+			expErr:      nil,
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": CPUSharesMin},
+				podToCPUQuota:  map[string]int64{"1": cpuLargeQuota},
+				podToCPUPeriod: map[string]uint64{"1": CPUPeriodDefault},
+			},
+		},
+		{
+			description: "Success, request (not empty), limit (empty)",
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         generatePod("1", cpuSmall, ""),
+			expErr:      nil,
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
+				podToCPUQuota:  make(map[string]int64),
+				podToCPUPeriod: make(map[string]uint64),
+			},
+		},
+		{
+			description: "Success, request (empty) == limit (empty)",
+			cccBefore:   generateEmptyCgroupCPUCFS(),
+			pod:         generatePod("1", "", ""),
+			expErr:      nil,
+			cccAfter: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": CPUSharesMin},
+				podToCPUQuota:  make(map[string]int64),
+				podToCPUPeriod: make(map[string]uint64),
+			},
+		},
+		{
+			description: "Success, request == limit, with some existing pods",
+			cccBefore: &cgroupCPUCFS{
+				podSet: sets.NewString(),
+				podToCPUShares: map[string]uint64{
+					"2": cpuSmallShare * 2,
+					"3": cpuSmallShare * 3,
+				},
+				podToCPUQuota: map[string]int64{
+					"2": cpuSmallQuota * 2,
+					"3": cpuSmallQuota * 3,
+				},
+				podToCPUPeriod: map[string]uint64{
+					"2": CPUPeriodDefault * 2,
+					"3": CPUPeriodDefault * 3,
 				},
 			},
-			expErr: fmt.Errorf("fake error"),
-			ccsAfter: &cgroupCPUShares{
+			pod:    generatePod("1", cpuSmall, cpuSmall),
+			expErr: nil,
+			cccAfter: &cgroupCPUCFS{
 				podSet: sets.NewString("1"),
+				podToCPUShares: map[string]uint64{
+					"1": cpuSmallShare,
+					"2": cpuSmallShare * 2,
+					"3": cpuSmallShare * 3,
+				},
+				podToCPUQuota: map[string]int64{
+					"1": cpuSmallQuota,
+					"2": cpuSmallQuota * 2,
+					"3": cpuSmallQuota * 3,
+				},
+				podToCPUPeriod: map[string]uint64{
+					"1": CPUPeriodDefault,
+					"2": CPUPeriodDefault * 2,
+					"3": CPUPeriodDefault * 3,
+				},
 			},
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			ccs := tc.ccsBefore
+			ccc := tc.cccBefore
 
-			err := ccs.AddPod(tc.pod)
+			err := ccc.AddPod(tc.pod)
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
 			}
-			assert.Equal(t, tc.ccsAfter, ccs)
+			assert.Equal(t, tc.cccAfter, ccc)
 		})
 	}
 }
 
-func TestCgroupCPUSharesRemovePod(t *testing.T) {
+func TestCgroupCPUCFSRemovePod(t *testing.T) {
 	testCaseArray := []struct {
 		description string
-		ccsBefore   *cgroupCPUShares
+		cccBefore   *cgroupCPUCFS
 		pod         *v1.Pod
-		ccsAfter    *cgroupCPUShares
+		cccAfter    *cgroupCPUCFS
 		expErr      error
 	}{
 		{
-			description: "Success, simple",
-			ccsBefore: &cgroupCPUShares{
-				podSet: sets.NewString("1"),
-			},
-			pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					UID: "1",
-				},
-			},
-			expErr: nil,
-			ccsAfter: &cgroupCPUShares{
-				podSet: sets.NewString(),
-			},
-		},
-		{
 			description: "Fail, pod not existed",
-			ccsBefore: &cgroupCPUShares{
+			cccBefore: &cgroupCPUCFS{
 				podSet: sets.NewString(),
 			},
 			pod:    nil,
 			expErr: fmt.Errorf("fake error"),
-			ccsAfter: &cgroupCPUShares{
+			cccAfter: &cgroupCPUCFS{
 				podSet: sets.NewString(),
 			},
 		},
 		{
 			description: "Fail, pod not added yet",
-			ccsBefore: &cgroupCPUShares{
+			cccBefore: &cgroupCPUCFS{
 				podSet: sets.NewString(),
 			},
-			pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					UID: "1",
+			pod:    generatePod("1", "", ""),
+			expErr: fmt.Errorf("fake error"),
+			cccAfter: &cgroupCPUCFS{
+				podSet: sets.NewString(),
+			},
+		},
+		{
+			description: "Success, one existing pod, with request < limit",
+			cccBefore: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": 1},
+				podToCPUQuota:  make(map[string]int64),
+				podToCPUPeriod: make(map[string]uint64),
+			},
+			pod:      generatePod("1", "", ""),
+			expErr:   nil,
+			cccAfter: generateEmptyCgroupCPUCFS(),
+		},
+		{
+			description: "Success, an existing pod, with request = limit",
+			cccBefore: &cgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": 1},
+				podToCPUQuota:  map[string]int64{"1": 1},
+				podToCPUPeriod: map[string]uint64{"1": 1},
+			},
+			pod:      generatePod("1", "", ""),
+			expErr:   nil,
+			cccAfter: generateEmptyCgroupCPUCFS(),
+		},
+		{
+			description: "Success, multiple existing pods",
+			cccBefore: &cgroupCPUCFS{
+				podSet: sets.NewString("1"),
+				podToCPUShares: map[string]uint64{
+					"1": 1,
+					"2": 2,
+					"3": 3,
+				},
+				podToCPUQuota: map[string]int64{
+					"1": 1,
+					"2": 2,
+					"3": 3,
+				},
+				podToCPUPeriod: map[string]uint64{
+					"1": 1,
+					"2": 2,
+					"3": 3,
 				},
 			},
-			expErr: fmt.Errorf("fake error"),
-			ccsAfter: &cgroupCPUShares{
+			pod:    generatePod("1", "100m", "200m"),
+			expErr: nil,
+			cccAfter: &cgroupCPUCFS{
 				podSet: sets.NewString(),
+				podToCPUShares: map[string]uint64{
+					"2": 2,
+					"3": 3,
+				},
+				podToCPUQuota: map[string]int64{
+					"2": 2,
+					"3": 3,
+				},
+				podToCPUPeriod: map[string]uint64{
+					"2": 2,
+					"3": 3,
+				},
 			},
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			ccs := tc.ccsBefore
+			ccc := tc.cccBefore
 
-			err := ccs.RemovePod(tc.pod)
+			err := ccc.RemovePod(tc.pod)
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
 			}
-			assert.Equal(t, tc.ccsAfter, ccs)
+			assert.Equal(t, tc.cccAfter, ccc)
 		})
 	}
 }

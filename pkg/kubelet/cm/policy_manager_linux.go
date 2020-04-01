@@ -35,10 +35,10 @@ func NewPolicyManager() (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
 	var ca []Cgroup
-	if ccs, err := NewCgroupCPUShares(); err != nil {
-		return nil, fmt.Errorf("fail to create cgroupCPUShares, %q", err)
+	if ccc, err := NewCgroupCPUCFS(); err != nil {
+		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
 	} else {
-		ca = append(ca, ccs)
+		ca = append(ca, ccc)
 	}
 
 	pm := &policyManagerImpl{
@@ -53,7 +53,7 @@ func (p *policyManagerImpl) Start() (rerr error) {
 
 	for _, c := range p.cgroupArray {
 		if err := c.Start(); err != nil {
-			return fmt.Errorf("fail to start cgroupCPUShares; %q", err)
+			return fmt.Errorf("fail to start cgroupCPUCFS; %q", err)
 		}
 	}
 
