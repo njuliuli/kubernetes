@@ -18,12 +18,17 @@ package cm
 
 import (
 	"fmt"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
 )
 
 type policyManagerImpl struct {
+	// Protect the entire PolicyManager, including any Cgroup.
+	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
+	mutex sync.Mutex
+
 	// stateArray stores all states for each cgroup value
 	cgroupArray []Cgroup
 }
@@ -35,11 +40,11 @@ func NewPolicyManager() (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
 	var ca []Cgroup
-	if ccc, err := NewCgroupCPUCFS(); err != nil {
+	ccc, err := NewCgroupCPUCFS()
+	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
-	} else {
-		ca = append(ca, ccc)
 	}
+	ca = append(ca, ccc)
 
 	pm := &policyManagerImpl{
 		cgroupArray: ca,
@@ -66,6 +71,9 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	}
 	klog.Infof("[policymanager] Add pod to policyManagerImpl, %q", pod.Name)
 
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
 	for _, c := range p.cgroupArray {
 		if err := c.AddPod(pod); err != nil {
 			return fmt.Errorf("fail to add pod to policyManagerImpl; %q", err)
@@ -80,6 +88,9 @@ func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 		return fmt.Errorf("pod not exist")
 	}
 	klog.Infof("[policymanager] Remove pod from policyManagerImpl, %q", pod.Name)
+
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 
 	for _, c := range p.cgroupArray {
 		if err := c.RemovePod(pod); err != nil {
