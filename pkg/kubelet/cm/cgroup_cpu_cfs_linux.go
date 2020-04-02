@@ -98,12 +98,15 @@ type cgroupCPUCFS struct {
 	podToCPUQuota map[string]int64
 	// CPU quota period.
 	podToCPUPeriod map[string]uint64
+
+	// Interface for cgroup management
+	cgroupManager CgroupManager
 }
 
 var _ Cgroup = &cgroupCPUCFS{}
 
 // NewCgroupCPUCFS creates state for cpu.shares
-func NewCgroupCPUCFS() (Cgroup, error) {
+func NewCgroupCPUCFS(cgroupManager CgroupManager) (Cgroup, error) {
 	klog.Infof("[policymanager] Create cgroupCPUCFS")
 
 	ccc := &cgroupCPUCFS{
@@ -111,6 +114,7 @@ func NewCgroupCPUCFS() (Cgroup, error) {
 		podToCPUShares: make(map[string]uint64),
 		podToCPUQuota:  make(map[string]int64),
 		podToCPUPeriod: make(map[string]uint64),
+		cgroupManager:  cgroupManager,
 	}
 
 	return ccc, nil

@@ -67,13 +67,13 @@ func generatePod(uid, cpuRequest, cpuLimit string) *v1.Pod {
 }
 
 func TestNewCgroupCPUCFS(t *testing.T) {
-	_, err := NewCgroupCPUCFS()
+	_, err := NewCgroupCPUCFS(new(MockCgroupManager))
 
 	assert.Nil(t, err, "Creating cgroupCPUCFS failed")
 }
 
 func TestCgroupCPUCFSStart(t *testing.T) {
-	ccc, _ := NewCgroupCPUCFS()
+	ccc, _ := NewCgroupCPUCFS(new(MockCgroupManager))
 
 	err := ccc.Start()
 

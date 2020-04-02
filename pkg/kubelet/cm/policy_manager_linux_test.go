@@ -23,11 +23,10 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/kubelet/cm/mocks"
 )
 
 func TestNewPolicyManager(t *testing.T) {
-	_, err := NewPolicyManager()
+	_, err := NewPolicyManager(new(MockCgroupManager))
 
 	assert.Nil(t, err, "Creating PolicyManager failed")
 }
@@ -52,7 +51,7 @@ func TestPolicyManagerStart(t *testing.T) {
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(mocks.Cgroup)
+			cgroupMock := new(MockCgroup)
 			cgroupMock.On("Start").Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
 				cgroupArray: []Cgroup{cgroupMock},
@@ -99,7 +98,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(mocks.Cgroup)
+			cgroupMock := new(MockCgroup)
 			cgroupMock.On("AddPod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
 				cgroupArray: []Cgroup{cgroupMock},
@@ -148,7 +147,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(mocks.Cgroup)
+			cgroupMock := new(MockCgroup)
 			cgroupMock.On("RemovePod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
 				cgroupArray: []Cgroup{cgroupMock},

@@ -17,6 +17,8 @@ go_library(
         "helpers_linux.go",
         "helpers_unsupported.go",
         "internal_container_lifecycle.go",
+        "mock_Cgroup.go",
+        "mock_CgroupManager.go",
         "node_container_manager_linux.go",
         "pod_container_manager_linux.go",
         "pod_container_manager_stub.go",
@@ -48,6 +50,7 @@ go_library(
         "//staging/src/k8s.io/apimachinery/pkg/util/sets:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/util/feature:go_default_library",
         "//staging/src/k8s.io/cri-api/pkg/apis:go_default_library",
+        "//vendor/github.com/stretchr/testify/mock:go_default_library",
         "//vendor/k8s.io/klog:go_default_library",
     ] + select({
         "@io_bazel_rules_go//go/platform:android": [
@@ -180,7 +183,6 @@ go_test(
     deps = select({
         "@io_bazel_rules_go//go/platform:android": [
             "//pkg/features:go_default_library",
-            "//pkg/kubelet/cm/mocks:go_default_library",
             "//pkg/kubelet/eviction/api:go_default_library",
             "//staging/src/k8s.io/api/core/v1:go_default_library",
             "//staging/src/k8s.io/apimachinery/pkg/api/resource:go_default_library",
@@ -195,7 +197,6 @@ go_test(
         ],
         "@io_bazel_rules_go//go/platform:linux": [
             "//pkg/features:go_default_library",
-            "//pkg/kubelet/cm/mocks:go_default_library",
             "//pkg/kubelet/eviction/api:go_default_library",
             "//staging/src/k8s.io/api/core/v1:go_default_library",
             "//staging/src/k8s.io/apimachinery/pkg/api/resource:go_default_library",

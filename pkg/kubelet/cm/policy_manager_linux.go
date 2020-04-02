@@ -29,18 +29,19 @@ type policyManagerImpl struct {
 	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
 	mutex sync.Mutex
 
-	// stateArray stores all states for each cgroup value
+	// cgroupArray stores all states for each cgroup value
+	// TODO(li) Will use map in the future, for per-task cgroup enforcement
 	cgroupArray []Cgroup
 }
 
 var _ PolicyManager = &policyManagerImpl{}
 
 // NewPolicyManager creates PolicyManager for pod level cgroup values
-func NewPolicyManager() (PolicyManager, error) {
+func NewPolicyManager(cgroupManager CgroupManager) (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
 	var ca []Cgroup
-	ccc, err := NewCgroupCPUCFS()
+	ccc, err := NewCgroupCPUCFS(cgroupManager)
 	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
 	}
@@ -74,6 +75,7 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
+	// TODO(li) Write to some Cgroup according to per-task policy
 	for _, c := range p.cgroupArray {
 		if err := c.AddPod(pod); err != nil {
 			return fmt.Errorf("fail to add pod to policyManagerImpl; %q", err)
@@ -92,6 +94,8 @@ func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
+	// Just remove pod from all Cgroup, not limited to per-task policy ones,
+	// as those will be skipped as this pod is not added to them in AddPod()
 	for _, c := range p.cgroupArray {
 		if err := c.RemovePod(pod); err != nil {
 			return fmt.Errorf("fail to remove pod from policyManagerImpl; %q", err)
