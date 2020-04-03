@@ -335,7 +335,8 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	// Initialize policy manager
-	cm.policyManager, err = NewPolicyManager(cgroupManager)
+	cm.policyManager, err = NewPolicyManager(cgroupManager,
+		cm.NewPodContainerManager)
 	if err != nil {
 		klog.Errorf("[policymanager] Failed to initialize policy manager: %v", err)
 		return nil, err

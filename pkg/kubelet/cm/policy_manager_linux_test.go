@@ -26,7 +26,8 @@ import (
 )
 
 func TestNewPolicyManager(t *testing.T) {
-	_, err := NewPolicyManager(new(MockCgroupManager))
+	_, err := NewPolicyManager(new(MockCgroupManager),
+		fakeNewPodContainerManager)
 
 	assert.Nil(t, err, "Creating PolicyManager failed")
 }
@@ -89,7 +90,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			expErr:           fmt.Errorf("fake error"),
 		},
 		{
-			description:      "Fail, error from AddPod()",
+			description:      "Fail, error from Cgroup.AddPod()",
 			pod:              &v1.Pod{},
 			expErrFromCgroup: fmt.Errorf("fake error"),
 			expErr:           fmt.Errorf("fake error"),
@@ -138,7 +139,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			expErr:           fmt.Errorf("fake error"),
 		},
 		{
-			description:      "Fail, error from RemovePod()",
+			description:      "Fail, error from Cgroup.RemovePod()",
 			pod:              &v1.Pod{},
 			expErrFromCgroup: fmt.Errorf("fake error"),
 			expErr:           fmt.Errorf("fake error"),

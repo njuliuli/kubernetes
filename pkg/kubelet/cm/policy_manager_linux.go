@@ -37,11 +37,12 @@ type policyManagerImpl struct {
 var _ PolicyManager = &policyManagerImpl{}
 
 // NewPolicyManager creates PolicyManager for pod level cgroup values
-func NewPolicyManager(cgroupManager CgroupManager) (PolicyManager, error) {
+func NewPolicyManager(cgroupManager CgroupManager,
+	newPodContainerManager typeNewPodContainerManager) (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
 	var ca []Cgroup
-	ccc, err := NewCgroupCPUCFS(cgroupManager)
+	ccc, err := NewCgroupCPUCFS(cgroupManager, newPodContainerManager)
 	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
 	}

@@ -19,6 +19,7 @@ go_library(
         "internal_container_lifecycle.go",
         "mock_Cgroup.go",
         "mock_CgroupManager.go",
+        "mock_PodContainerManager.go",
         "node_container_manager_linux.go",
         "pod_container_manager_linux.go",
         "pod_container_manager_stub.go",

@@ -87,11 +87,19 @@ func getCPUQuota(resourceLimits v1.ResourceList, cpuPeriod int64) (cpuQuota int6
 	return cpuQuota
 }
 
+// the type used to pass in ContainerManager.NewPodContainerManager()
+type typeNewPodContainerManager func() PodContainerManager
+
+// cgroupCPUCFS is used to manage all CFS related cgroup values,
+// such as cpu.shares, cpu.cfs_period_us, and cpu.cfs_quota_us.
 type cgroupCPUCFS struct {
 	// Track all pods added to cgroupCPUCFS, set of pod.UID
 	podSet sets.String
 
-	// podToValue is of map[string(pod.UID)] -> value
+	// Below podToValue are of the form map[string(pod.UID)] -> value.
+	// In ResourceConfig, fileds not set is default to Go's nil,
+	// while here, value not set means the key pod.UID is not in the map.
+
 	// CPU shares (relative weight vs. other containers).
 	podToCPUShares map[string]uint64
 	// CPU hardcap limit (in usecs). Allowed cpu time in a given period.
@@ -101,20 +109,27 @@ type cgroupCPUCFS struct {
 
 	// Interface for cgroup management
 	cgroupManager CgroupManager
+
+	// newPodContainerManager is a factory method returns PodContainerManager,
+	// which is the interface to stores and manages pod level containers.
+	// We use factory method since ContainerManager do it this way.
+	newPodContainerManager typeNewPodContainerManager
 }
 
 var _ Cgroup = &cgroupCPUCFS{}
 
 // NewCgroupCPUCFS creates state for cpu.shares
-func NewCgroupCPUCFS(cgroupManager CgroupManager) (Cgroup, error) {
+func NewCgroupCPUCFS(cgroupManager CgroupManager,
+	newPodContainerManager typeNewPodContainerManager) (Cgroup, error) {
 	klog.Infof("[policymanager] Create cgroupCPUCFS")
 
 	ccc := &cgroupCPUCFS{
-		podSet:         sets.NewString(),
-		podToCPUShares: make(map[string]uint64),
-		podToCPUQuota:  make(map[string]int64),
-		podToCPUPeriod: make(map[string]uint64),
-		cgroupManager:  cgroupManager,
+		podSet:                 sets.NewString(),
+		podToCPUShares:         make(map[string]uint64),
+		podToCPUQuota:          make(map[string]int64),
+		podToCPUPeriod:         make(map[string]uint64),
+		cgroupManager:          cgroupManager,
+		newPodContainerManager: newPodContainerManager,
 	}
 
 	return ccc, nil
@@ -140,7 +155,22 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 	}
 	ccc.podSet.Insert(podUID)
 
+	// Write cgroup values for this pod to host
+	if err := ccc.addPodUpdate(pod); err != nil {
+		return err
+	}
+	cgroupConfig := ccc.readResourceConfig(pod)
+	if err := ccc.cgroupManager.Update(cgroupConfig); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Update all podToValue (map[string(pod.UID)] -> value) for this pod
+func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) (rerr error) {
 	// compute cpuShares and cpuQuota
+	podUID := string(pod.UID)
 	resourceRequest, resourceLimits := resource.PodRequestsAndLimits(pod)
 	cpuShares := getCPUShares(resourceRequest)
 	cpuPeriod := CPUPeriodDefault
@@ -165,16 +195,60 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 		if cpuLimitsDeclared {
 			ccc.podToCPUPeriod[podUID] = cpuPeriod
 			ccc.podToCPUQuota[podUID] = cpuQuota
+		} else {
+			// This cleanup should not be necessary, add just in case
+			if _, found := ccc.podToCPUQuota[podUID]; found {
+				delete(ccc.podToCPUQuota, podUID)
+			}
+			if _, found := ccc.podToCPUPeriod[podUID]; found {
+				delete(ccc.podToCPUPeriod, podUID)
+			}
 		}
 	case v1.PodQOSBestEffort:
 		ccc.podToCPUShares[podUID] = CPUSharesMin
+		// This cleanup should not be necessary, add just in case
+		if _, found := ccc.podToCPUQuota[podUID]; found {
+			delete(ccc.podToCPUQuota, podUID)
+		}
+		if _, found := ccc.podToCPUPeriod[podUID]; found {
+			delete(ccc.podToCPUPeriod, podUID)
+		}
 	default:
-		return fmt.Errorf("pod (Name = %q) qosClass (%q) is unkonwn", pod.Name, qosClass)
+		return fmt.Errorf("pod (Name = %q) qosClass (%q) is unkonwn",
+			pod.Name, qosClass)
 	}
 
-	klog.Infof("[policymanager] cgroupCPUCFS (%+v) after AddPod", ccc)
+	klog.Infof("[policymanager] cgroupCPUCFS (%+v) after cgroupCPUCFS.addPodUpdate", ccc)
 
 	return nil
+}
+
+// Get CgroupConfig for this pod from stored cgroup values
+func (ccc *cgroupCPUCFS) readResourceConfig(pod *v1.Pod) *CgroupConfig {
+	// Read cgroup values
+	podUID := string(pod.UID)
+	rc := &ResourceConfig{}
+	if cpuShares, found := ccc.podToCPUShares[podUID]; found {
+		rc.CpuShares = &cpuShares
+	}
+	if cpuPeriod, found := ccc.podToCPUPeriod[podUID]; found {
+		rc.CpuPeriod = &cpuPeriod
+	}
+	if cpuQuota, found := ccc.podToCPUQuota[podUID]; found {
+		rc.CpuQuota = &cpuQuota
+	}
+
+	// Get cgroup path to this pod
+	pcm := ccc.newPodContainerManager()
+	cgroupName, cgroupPath := pcm.GetPodContainerName(pod)
+
+	klog.Infof("[policymanager] For pod (%q), cgroupPath (%q) and ResourceParameters (%+v)",
+		pod.Name, cgroupPath, rc)
+
+	return &CgroupConfig{
+		Name:               cgroupName,
+		ResourceParameters: rc,
+	}
 }
 
 func (ccc *cgroupCPUCFS) RemovePod(pod *v1.Pod) (rerr error) {
@@ -189,6 +263,10 @@ func (ccc *cgroupCPUCFS) RemovePod(pod *v1.Pod) (rerr error) {
 		return fmt.Errorf("pod (Name = %q) not added to cgroupCPUCFS yet", pod.Name)
 	}
 	ccc.podSet.Delete(podUID)
+
+	// TODO(li) Do we need to update cgroup values here, before deleting cgroup path?
+	// Maybe set cpu.shares for this pod to CPUSharesMin here?
+	// Now I think it is not necessary.
 
 	// just remove everything about pod.UID
 	if _, found := ccc.podToCPUShares[podUID]; found {
