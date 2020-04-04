@@ -55,7 +55,7 @@ func TestPolicyManagerStart(t *testing.T) {
 			cgroupMock := new(MockCgroup)
 			cgroupMock.On("Start").Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []Cgroup{cgroupMock},
+				cgroupCPUCFS: cgroupMock,
 			}
 
 			err := pm.Start()
@@ -102,7 +102,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			cgroupMock := new(MockCgroup)
 			cgroupMock.On("AddPod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []Cgroup{cgroupMock},
+				cgroupCPUCFS: cgroupMock,
 			}
 
 			err := pm.AddPod(tc.pod)
@@ -151,7 +151,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			cgroupMock := new(MockCgroup)
 			cgroupMock.On("RemovePod", tc.pod).Return(tc.expErrFromCgroup)
 			pm := policyManagerImpl{
-				cgroupArray: []Cgroup{cgroupMock},
+				cgroupCPUCFS: cgroupMock,
 			}
 
 			err := pm.RemovePod(tc.pod)

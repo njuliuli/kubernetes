@@ -24,14 +24,19 @@ import (
 	"k8s.io/klog"
 )
 
+// policy names for v1.Pod.Spec.Policy
+const (
+	policyDefault = ""
+	policyNone    = "none"
+)
+
 type policyManagerImpl struct {
 	// Protect the entire PolicyManager, including any Cgroup.
 	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
 	mutex sync.Mutex
 
-	// cgroupArray stores all states for each cgroup value
-	// TODO(li) Will use map in the future, for per-task cgroup enforcement
-	cgroupArray []Cgroup
+	// Each Cgroup struct is used to manage cgroup values for a purpose
+	cgroupCPUCFS Cgroup
 }
 
 var _ PolicyManager = &policyManagerImpl{}
@@ -41,15 +46,13 @@ func NewPolicyManager(cgroupManager CgroupManager,
 	newPodContainerManager typeNewPodContainerManager) (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
-	var ca []Cgroup
-	ccc, err := NewCgroupCPUCFS(cgroupManager, newPodContainerManager)
+	cgroupCPUCFS, err := NewCgroupCPUCFS(cgroupManager, newPodContainerManager)
 	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
 	}
-	ca = append(ca, ccc)
 
 	pm := &policyManagerImpl{
-		cgroupArray: ca,
+		cgroupCPUCFS: cgroupCPUCFS,
 	}
 
 	return pm, nil
@@ -58,10 +61,8 @@ func NewPolicyManager(cgroupManager CgroupManager,
 func (p *policyManagerImpl) Start() (rerr error) {
 	klog.Infof("[policymanager] Start policyManagerImpl, %+v", p)
 
-	for _, c := range p.cgroupArray {
-		if err := c.Start(); err != nil {
-			return fmt.Errorf("fail to start cgroupCPUCFS; %q", err)
-		}
+	if err := p.cgroupCPUCFS.Start(); err != nil {
+		return fmt.Errorf("fail to start cgroupCPUCFS; %q", err)
 	}
 
 	return nil
@@ -71,18 +72,25 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
-	klog.Infof("[policymanager] Add pod to policyManagerImpl, %q", pod.Name)
+	klog.Infof("[policymanager] Add pod (%q) with policy name (%q) to policyManagerImpl",
+		pod.Name, pod.Spec.Policy)
 
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	// TODO(li) Write to some Cgroup according to per-task policy
-	for _, c := range p.cgroupArray {
-		if err := c.AddPod(pod); err != nil {
+	switch pod.Spec.Policy {
+	case policyDefault:
+		if err := p.cgroupCPUCFS.AddPod(pod); err != nil {
 			return fmt.Errorf("fail to add pod to policyManagerImpl; %q", err)
 		}
+	case policyNone:
+		klog.Infof("[policymanager] Skip pod (%q) with policy name (%q) to policyManagerImpl",
+			pod.Name, pod.Spec.Policy)
+	default:
+		return fmt.Errorf("pod (Name = %q) policy name (%q) is unkonwn",
+			pod.Name, pod.Spec.Policy)
 	}
-
 	return nil
 }
 
@@ -97,10 +105,9 @@ func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 
 	// Just remove pod from all Cgroup, not limited to per-task policy ones,
 	// as those will be skipped as this pod is not added to them in AddPod()
-	for _, c := range p.cgroupArray {
-		if err := c.RemovePod(pod); err != nil {
-			return fmt.Errorf("fail to remove pod from policyManagerImpl; %q", err)
-		}
+
+	if err := p.cgroupCPUCFS.RemovePod(pod); err != nil {
+		return fmt.Errorf("fail to remove pod from policyManagerImpl; %q", err)
 	}
 
 	return nil
