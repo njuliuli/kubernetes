@@ -1623,6 +1623,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// We don't create and apply updates to cgroup if its a run once pod and was killed above
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
 			if !pcm.Exists(pod) {
+
 				if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 					klog.V(2).Infof("Failed to update QoS cgroups while syncing pod: %v", err)
 				}

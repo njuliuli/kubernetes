@@ -3507,6 +3507,10 @@ message PodSpec {
   // +listMapKey=topologyKey
   // +listMapKey=whenUnsatisfiable
   repeated TopologySpreadConstraint topologySpreadConstraints = 33;
+
+  // Policy describe how the pod is scheduled in the node.
+  // +optional
+  optional string policy = 35;
 }
 
 // PodStatus represents information about the status of a pod. Status may trail the actual
