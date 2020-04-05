@@ -23,8 +23,47 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
+// Generate pod with given fields set
+func testGeneratePod(policy, uid, cpuRequest, cpuLimit string) *v1.Pod {
+	rr := v1.ResourceRequirements{}
+	if cpuRequest != "" {
+		rr.Requests = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuRequest),
+		}
+	}
+	if cpuLimit != "" {
+		rr.Limits = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuLimit),
+		}
+	}
+
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: types.UID(uid),
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: rr,
+				},
+			},
+			Policy: policy,
+		},
+	}
+}
+
+// Generate pod with pod.Policy
+func testGeneratePodPolicy(policy string) *v1.Pod {
+	return testGeneratePod(policy, "", "", "")
+}
+
+// TODO(li) We need to test on failing cases,
+// by figuring out how to pass "fake" NewCgroupCPUCFS() to return error
 func TestNewPolicyManager(t *testing.T) {
 	_, err := NewPolicyManager(new(MockCgroupManager),
 		fakeNewPodContainerManager)
@@ -34,75 +73,108 @@ func TestNewPolicyManager(t *testing.T) {
 
 func TestPolicyManagerStart(t *testing.T) {
 	testCaseArray := []struct {
-		description      string
-		expErrFromCgroup error
-		expErr           error
+		description  string
+		expErrCPUCFS error
+		expErrCPUSet error
+		expErr       error
 	}{
 		{
-			description:      "Success, simple",
-			expErrFromCgroup: nil,
-			expErr:           nil,
+			description: "Success, simple",
 		},
 		{
-			description:      "Fail, error from Start()",
-			expErrFromCgroup: fmt.Errorf("fake error"),
-			expErr:           fmt.Errorf("fake error"),
+			description:  "Fail, error from expErrCPUCFS.Start()",
+			expErrCPUCFS: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, error from expErrCPUSet.Start()",
+			expErrCPUSet: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(MockCgroup)
-			cgroupMock.On("Start").Return(tc.expErrFromCgroup)
+			cgroupCPUCFSMock := new(MockCgroup)
+			cgroupCPUCFSMock.On("Start").Return(tc.expErrCPUCFS)
+			cgroupCPUSetMock := new(MockCgroup)
+			cgroupCPUSetMock.On("Start").Return(tc.expErrCPUSet)
 			pm := policyManagerImpl{
-				cgroupCPUCFS: cgroupMock,
+				cgroupCPUCFS: cgroupCPUCFSMock,
+				cgroupCPUSet: cgroupCPUSetMock,
 			}
 
 			err := pm.Start()
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
+				cgroupCPUCFSMock.AssertExpectations(t)
+				cgroupCPUSetMock.AssertExpectations(t)
 			} else {
 				assert.Error(t, err)
 			}
-			cgroupMock.AssertExpectations(t)
 		})
 	}
 }
 
 func TestPolicyManagerAddPod(t *testing.T) {
 	testCaseArray := []struct {
-		description      string
-		pod              *v1.Pod
-		expErrFromCgroup error
-		expErr           error
+		description  string
+		pod          *v1.Pod
+		expErrCPUCFS error
+		expErrCPUSet error
+		expErr       error
 	}{
 		{
-			description:      "Success, simple",
-			pod:              &v1.Pod{},
-			expErrFromCgroup: nil,
-			expErr:           nil,
+			description: "Success, policy=policyCPUCSF",
+			pod:         testGeneratePodPolicy(policyCPUCFS),
 		},
 		{
-			description:      "Fail, pod not existed",
-			pod:              nil,
-			expErrFromCgroup: nil,
-			expErr:           fmt.Errorf("fake error"),
+			description: "Success, policy=policyCPUSet",
+			pod:         testGeneratePodPolicy(policyCPUSet),
 		},
 		{
-			description:      "Fail, error from Cgroup.AddPod()",
-			pod:              &v1.Pod{},
-			expErrFromCgroup: fmt.Errorf("fake error"),
-			expErr:           fmt.Errorf("fake error"),
+			description: "Fail, policy unknown",
+			pod:         testGeneratePodPolicy(policyUnknown),
+			expErr:      fmt.Errorf("fake error"),
+		},
+		{
+			description: "Fail, pod not existed",
+			expErr:      fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, policy=policyCPUCSF, error from cgroupCPUCFS.AddPod()",
+			pod:          testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFS: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, policy=policyCPUSet, error from cgroupCPUSet.AddPod()",
+			pod:          testGeneratePodPolicy(policyCPUSet),
+			expErrCPUSet: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(MockCgroup)
-			cgroupMock.On("AddPod", tc.pod).Return(tc.expErrFromCgroup)
+			cgroupCPUCFSMock := new(MockCgroup)
+			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUCFS {
+				cgroupCPUCFSMock.
+					On("AddPod", tc.pod).
+					Return(tc.expErrCPUCFS).
+					Once()
+			}
+			cgroupCPUSetMock := new(MockCgroup)
+			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUSet {
+				cgroupCPUSetMock.
+					On("AddPod", tc.pod).
+					Return(tc.expErrCPUSet).
+					Once()
+			}
 			pm := policyManagerImpl{
-				cgroupCPUCFS: cgroupMock,
+				cgroupCPUCFS: cgroupCPUCFSMock,
+				cgroupCPUSet: cgroupCPUSetMock,
 			}
 
 			err := pm.AddPod(tc.pod)
@@ -113,7 +185,12 @@ func TestPolicyManagerAddPod(t *testing.T) {
 				assert.Error(t, err)
 			}
 			if tc.pod != nil {
-				cgroupMock.AssertExpectations(t)
+				switch tc.pod.Spec.Policy {
+				case policyCPUCFS:
+					cgroupCPUCFSMock.AssertExpectations(t)
+				case policyCPUSet:
+					cgroupCPUSetMock.AssertExpectations(t)
+				}
 			}
 		})
 	}
@@ -121,37 +198,62 @@ func TestPolicyManagerAddPod(t *testing.T) {
 
 func TestPolicyManagerRemovePod(t *testing.T) {
 	testCaseArray := []struct {
-		description      string
-		pod              *v1.Pod
-		expErrFromCgroup error
-		expErr           error
+		description  string
+		pod          *v1.Pod
+		expErrCPUCFS error
+		expErrCPUSet error
+		expErr       error
 	}{
 		{
-			description:      "Success, simple",
-			pod:              &v1.Pod{},
-			expErrFromCgroup: nil,
-			expErr:           nil,
+			description: "Success, policy=policyCPUCSF",
+			pod:         testGeneratePodPolicy(policyCPUCFS),
 		},
 		{
-			description:      "Fail, pod not existed",
-			pod:              nil,
-			expErrFromCgroup: nil,
-			expErr:           fmt.Errorf("fake error"),
+			description: "Success, policy=policyCPUSet",
+			pod:         testGeneratePodPolicy(policyCPUSet),
 		},
 		{
-			description:      "Fail, error from Cgroup.RemovePod()",
-			pod:              &v1.Pod{},
-			expErrFromCgroup: fmt.Errorf("fake error"),
-			expErr:           fmt.Errorf("fake error"),
+			description: "Fail, policy unknown",
+			pod:         testGeneratePodPolicy(policyUnknown),
+			expErr:      fmt.Errorf("fake error"),
+		},
+		{
+			description: "Fail, pod not existed",
+			expErr:      fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, policy=policyCPUCSF, error from cgroupCPUCFS.RemovePod()",
+			pod:          testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFS: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, policy=policyCPUSet, error from cgroupCPUSet.RemovePod()",
+			pod:          testGeneratePodPolicy(policyCPUSet),
+			expErrCPUSet: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupMock := new(MockCgroup)
-			cgroupMock.On("RemovePod", tc.pod).Return(tc.expErrFromCgroup)
+			cgroupCPUCFSMock := new(MockCgroup)
+			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUCFS {
+				cgroupCPUCFSMock.
+					On("RemovePod", tc.pod).
+					Return(tc.expErrCPUCFS).
+					Once()
+			}
+			cgroupCPUSetMock := new(MockCgroup)
+			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUSet {
+				cgroupCPUSetMock.
+					On("RemovePod", tc.pod).
+					Return(tc.expErrCPUSet).
+					Once()
+			}
 			pm := policyManagerImpl{
-				cgroupCPUCFS: cgroupMock,
+				cgroupCPUCFS: cgroupCPUCFSMock,
+				cgroupCPUSet: cgroupCPUSetMock,
 			}
 
 			err := pm.RemovePod(tc.pod)
@@ -162,7 +264,12 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 				assert.Error(t, err)
 			}
 			if tc.pod != nil {
-				cgroupMock.AssertExpectations(t)
+				switch tc.pod.Spec.Policy {
+				case policyCPUCFS:
+					cgroupCPUCFSMock.AssertExpectations(t)
+				case policyCPUSet:
+					cgroupCPUSetMock.AssertExpectations(t)
+				}
 			}
 		})
 	}

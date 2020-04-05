@@ -1635,7 +1635,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 				// Add pod to PolicyManager, and update cgroup values accordingly.
 				policyManager := kl.containerManager.GetPolicyManager()
 				if err := policyManager.AddPod(pod); err != nil {
-					klog.V(2).Infof("Failed to add pod to policy manager: %v", err)
+					klog.V(2).Infof("[policymanager] Failed to add pod to policy manager: %v", err)
 				}
 			}
 		}

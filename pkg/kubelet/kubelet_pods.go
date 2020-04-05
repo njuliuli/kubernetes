@@ -836,7 +836,7 @@ func (kl *Kubelet) killPod(pod *v1.Pod, runningPod *kubecontainer.Pod, status *k
 	// Remove pod from PolicyManager, and update cgroup values accordingly.
 	policyManager := kl.containerManager.GetPolicyManager()
 	if err := policyManager.RemovePod(pod); err != nil {
-		klog.V(2).Infof("Failed to remove pod from policy manager: %v", err)
+		klog.V(2).Infof("[policymanager] Failed to remove pod from policy manager: %v", err)
 	}
 
 	return nil

@@ -30,11 +30,11 @@ import (
 // for units conversion
 const (
 	// 2ms
-	CPUSharesMin = 2
+	cpuSharesMin = 2
 	// 100000 -> 100ms
-	CPUPeriodDefault uint64 = 100000
+	cpuPeriodDefault uint64 = 100000
 	// 1000 -> 1ms
-	CPUQuotaMin = 1000
+	cpuQuotaMin = 1000
 )
 
 // getCPUShares calculate CFS CPU share from v1.ResourceList
@@ -48,13 +48,13 @@ func getCPUShares(resourceRequest v1.ResourceList) uint64 {
 		// Docker converts zero milliCPU to unset, which maps to kernel default
 		// for unset: 1024. Return 2 here to really match kernel default for
 		// zero milliCPU.
-		return CPUSharesMin
+		return cpuSharesMin
 	}
 
 	// Conceptually (milliCPU / MilliCPUToCPU) * SharesPerCPU, but factored to improve rounding.
 	shares := (cpuRequest * SharesPerCPU) / MilliCPUToCPU
-	if shares < CPUSharesMin {
-		return CPUSharesMin
+	if shares < cpuSharesMin {
+		return cpuSharesMin
 	}
 
 	return uint64(shares)
@@ -81,8 +81,8 @@ func getCPUQuota(resourceLimits v1.ResourceList, cpuPeriod int64) (cpuQuota int6
 	cpuQuota = (cpuLimit * cpuPeriod) / MilliCPUToCPU
 
 	// quota needs to be a minimum of 1ms.
-	if cpuQuota < CPUQuotaMin {
-		cpuQuota = CPUQuotaMin
+	if cpuQuota < cpuQuotaMin {
+		cpuQuota = cpuQuotaMin
 	}
 	return cpuQuota
 }
@@ -118,7 +118,7 @@ type cgroupCPUCFS struct {
 
 var _ Cgroup = &cgroupCPUCFS{}
 
-// NewCgroupCPUCFS creates state for cpu.shares
+// NewCgroupCPUCFS creates cgroupCPUCFS
 func NewCgroupCPUCFS(cgroupManager CgroupManager,
 	newPodContainerManager typeNewPodContainerManager) (Cgroup, error) {
 	klog.Infof("[policymanager] Create cgroupCPUCFS")
@@ -146,12 +146,12 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 		return fmt.Errorf("pod not exist")
 	}
 
-	klog.Infof("[policymanager] Add pod (Name = %q) to cgroupCPUCFS", pod.Name)
+	klog.Infof("[policymanager] Add pod (%q) to cgroupCPUCFS", pod.Name)
 
 	// A pod can only be added once, update is not supported for now
 	podUID := string(pod.UID)
 	if ccc.podSet.Has(podUID) {
-		return fmt.Errorf("pod (Name = %q) already added to cgroupCPUCFS", pod.Name)
+		return fmt.Errorf("pod (%q) already added to cgroupCPUCFS", pod.Name)
 	}
 	ccc.podSet.Insert(podUID)
 
@@ -173,7 +173,7 @@ func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) (rerr error) {
 	podUID := string(pod.UID)
 	resourceRequest, resourceLimits := resource.PodRequestsAndLimits(pod)
 	cpuShares := getCPUShares(resourceRequest)
-	cpuPeriod := CPUPeriodDefault
+	cpuPeriod := cpuPeriodDefault
 	cpuQuota := getCPUQuota(resourceLimits, int64(cpuPeriod))
 
 	// TODO(li) I will replace it based on per-task policy
@@ -205,7 +205,7 @@ func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) (rerr error) {
 			}
 		}
 	case v1.PodQOSBestEffort:
-		ccc.podToCPUShares[podUID] = CPUSharesMin
+		ccc.podToCPUShares[podUID] = cpuSharesMin
 		// This cleanup should not be necessary, add just in case
 		if _, found := ccc.podToCPUQuota[podUID]; found {
 			delete(ccc.podToCPUQuota, podUID)
@@ -214,7 +214,7 @@ func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) (rerr error) {
 			delete(ccc.podToCPUPeriod, podUID)
 		}
 	default:
-		return fmt.Errorf("pod (Name = %q) qosClass (%q) is unkonwn",
+		return fmt.Errorf("pod (%q) qosClass (%q) is unkonwn",
 			pod.Name, qosClass)
 	}
 
@@ -260,12 +260,12 @@ func (ccc *cgroupCPUCFS) RemovePod(pod *v1.Pod) (rerr error) {
 
 	podUID := string(pod.UID)
 	if !ccc.podSet.Has(podUID) {
-		return fmt.Errorf("pod (Name = %q) not added to cgroupCPUCFS yet", pod.Name)
+		return fmt.Errorf("pod (%q) not added to cgroupCPUCFS yet", pod.Name)
 	}
 	ccc.podSet.Delete(podUID)
 
 	// TODO(li) Do we need to update cgroup values here, before deleting cgroup path?
-	// Maybe set cpu.shares for this pod to CPUSharesMin here?
+	// Maybe set cpu.shares for this pod to cpuSharesMin here?
 	// Now I think it is not necessary.
 
 	// just remove everything about pod.UID
