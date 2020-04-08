@@ -361,7 +361,6 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 		{
 			description: "Fail, pod not existed",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         nil,
 			expErr:      fmt.Errorf("fake error"),
 			cccAfter:    testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
@@ -379,7 +378,6 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 				podToCPUShares: map[string]uint64{"1": 1},
 			}),
 			pod:      testGeneratePodCPUCFS("1", "", ""),
-			expErr:   nil,
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
 		{
@@ -391,7 +389,6 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 				podToCPUPeriod: map[string]uint64{"1": 1},
 			}),
 			pod:      testGeneratePodCPUCFS("1", "", ""),
-			expErr:   nil,
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
 		{
@@ -414,8 +411,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 					"3": 3,
 				},
 			}),
-			pod:    testGeneratePodCPUCFS("1", "100m", "200m"),
-			expErr: nil,
+			pod: testGeneratePodCPUCFS("1", "100m", "200m"),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString(),
 				podToCPUShares: map[string]uint64{

@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/api/v1/resource"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
@@ -35,17 +36,17 @@ type cgroupCPUSet struct {
 	// Track all pods added to cgroupCPUSet, set of pod.UID
 	podSet sets.String
 
+	// Contains details of node CPU topology.
+	cpuTopology *topology.CPUTopology
+
+	// cpusReserved is not for pods, but for kubelet and system.
+	cpusReserved cpuset.CPUSet
 	// Below are used to keep track of cpuset.cpus available to pods.
 	// podToCPUS is used to track dedicated cpuset assignment for some pods,
 	// while cpusShared is used to track the shared cpuset for all other pods.
 	// podToCPUS is of map[string(pod.UID)] -> CPUSet
-	podToCPUS  map[string]cpuset.CPUSet
 	cpusShared cpuset.CPUSet
-	// cpusReserved is not for pods, but for kubelet and system.
-	cpusReserved cpuset.CPUSet
-
-	// Contains details of node CPU topology.
-	topology *topology.CPUTopology
+	podToCPUS  map[string]cpuset.CPUSet
 
 	// TODO(li) Now initialized to cpumanager.TakeByTopology,
 	// which is made public from cpumanager.takeByTopology() from this purpose,
@@ -91,10 +92,7 @@ func NewCgroupCPUSet(cpuTopology *cputopology.CPUTopology,
 	// TODO(li) We may be able to use factional CPUs for cpusReserved in the future.
 	numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
 
-	// TODO(li) How about (specificCPUs.Size() > 0),
-	// e.g. kubelet flag "--reserved-cpus" is set?
-	// https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/#explicitly-reserved-cpu-list
-	var cpusReserved cpuset.CPUSet
+	cpusReserved := cpuset.NewCPUSet()
 	cpusAll := cpuTopology.CPUDetails.CPUs()
 	if cpusSpecific.Size() > 0 {
 		cpusReserved = cpusSpecific
@@ -115,7 +113,7 @@ func NewCgroupCPUSet(cpuTopology *cputopology.CPUTopology,
 		cpusReserved:       cpusReserved,
 		cpusShared:         cpusAll.Difference(cpusReserved),
 		podToCPUS:          make(map[string]cpuset.CPUSet),
-		topology:           cpuTopology,
+		cpuTopology:        cpuTopology,
 		takeByTopologyFunc: takeByTopologyFunc,
 	}
 
@@ -144,7 +142,48 @@ func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
 	}
 	ccs.podSet.Insert(podUID)
 
-	klog.Infof("[policymanager] cgroupCPUSet (%+v) after AddPod", ccs)
+	// Write cgroup values for this pod to host
+	// TODO(li) For now, when adding pod failed here, cgroupCPUSet is not changed.
+	// As a result,
+	// this pod is assumed to use the shared pool, no matter the pod.Spec.
+	// It happens in cased such as pod is too large or dedicated number is 0.
+	if err := ccs.addPodUpdate(pod); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// get numCPUS for cpuset.cpus of this pod
+// TODO(li) Now we return request CPU, should we also return limit?
+func (ccs *cgroupCPUSet) getNumCPUS(pod *v1.Pod) (cpusRequest int) {
+	resourceRequest, _ := resource.PodRequestsAndLimits(pod)
+
+	cpuQuantity, found := resourceRequest[v1.ResourceCPU]
+	if !found {
+		return 0
+	}
+	// fractional is rounded to its ceil
+	return int(math.Ceil(float64(cpuQuantity.Value())))
+}
+
+// Update all podToValue (map[string(pod.UID)] -> value) for this pod
+func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) (rerr error) {
+	cpusPodNum := ccs.getNumCPUS(pod)
+	if cpusPodNum == 0 {
+		return fmt.Errorf("skip pod (%q) that need 0 dedicated CPUs", pod.Name)
+	}
+
+	cpusPod, err := ccs.takeByTopologyFunc(ccs.cpuTopology, ccs.cpusShared,
+		cpusPodNum)
+	if err != nil {
+		return err
+	}
+
+	ccs.podToCPUS[string(pod.UID)] = cpusPod
+	ccs.cpusShared = ccs.cpusShared.Difference(cpusPod)
+
+	klog.Infof("[policymanager] cgroupCPUSet (%+v) after addPodUpdate", ccs)
 
 	return nil
 }
@@ -161,6 +200,12 @@ func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {
 		return fmt.Errorf("pod (%q) not added to cgroupCPUSet yet", pod.Name)
 	}
 	ccs.podSet.Delete(podUID)
+
+	// Return dedicated cpuset.cpus back to the shared CPU pool
+	if cpusPod, found := ccs.podToCPUS[podUID]; found {
+		ccs.cpusShared = ccs.cpusShared.Union(cpusPod)
+		delete(ccs.podToCPUS, podUID)
+	}
 
 	klog.Infof("[policymanager] cgroupCPUSet (%+v) after RemovePod", ccs)
 

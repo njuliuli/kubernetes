@@ -223,7 +223,7 @@ func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) (rerr error) {
 			pod.Name, qosClass)
 	}
 
-	klog.Infof("[policymanager] cgroupCPUCFS (%+v) after cgroupCPUCFS.addPodUpdate", ccc)
+	klog.Infof("[policymanager] cgroupCPUCFS (%+v) after addPodUpdate", ccc)
 
 	return nil
 }

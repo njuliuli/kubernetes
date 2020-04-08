@@ -18,12 +18,12 @@ package cm
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
@@ -31,9 +31,9 @@ import (
 )
 
 var (
-	// Taken from cpumanager.topoDualSocketHT
-	topologyDualSocketHT = &topology.CPUTopology{
-		NumCPUs:    14,
+	// Use the real CPU topology of my physical host
+	testTopologyDualSocketHT = &topology.CPUTopology{
+		NumCPUs:    24,
 		NumSockets: 2,
 		NumCores:   12,
 		CPUDetails: map[int]topology.CPUInfo{
@@ -63,6 +63,13 @@ var (
 			23: {CoreID: 11, SocketID: 1, NUMANodeID: 1},
 		},
 	}
+	// Reserve 4 CPUs for testTopologyDualSocketHT
+	testNodeAllocatableReservationSuccess = v1.ResourceList{
+		v1.ResourceCPU: *resource.NewQuantity(4, resource.DecimalSI),
+	}
+	testCPUSReserved = cpuset.NewCPUSet(0, 2, 12, 14)
+	testCPUSShared   = testTopologyDualSocketHT.CPUDetails.CPUs().
+				Difference(testCPUSReserved)
 )
 
 // Generate pod with given fields set, with pod.Policy=policyCFS
@@ -72,21 +79,48 @@ func testGeneratePodCPUSet(uid, cpuRequest, cpuLimit string) *v1.Pod {
 
 // testCgroupCPUSet is used to generate cgroupCPUSet using in test
 type testCgroupCPUSet struct {
-	podSet sets.String
+	podSet             sets.String
+	cpuTopology        *topology.CPUTopology
+	cpusReserved       cpuset.CPUSet
+	cpusShared         cpuset.CPUSet
+	podToCPUS          map[string]cpuset.CPUSet
+	takeByTopologyFunc cpumanager.TypeTakeByTopologyFunc
 }
 
-// Generate default cgroupCPUSet
-func testGenerateCgroupCPUSet(tccc *testCgroupCPUSet) *cgroupCPUSet {
-	// If pod state fileds (podSet, podToValue) are not set,
-	// the default value of generated cgroupCPUSet is set to empty instead of Go's nil
-	podSet := sets.NewString()
-	if tccc.podSet != nil {
-		podSet = tccc.podSet
+// Generate default cgroupCPUSet, with customized default values after initialization
+func testGenerateCgroupCPUSet(tccs *testCgroupCPUSet) *cgroupCPUSet {
+	ccs := &cgroupCPUSet{
+		podSet:             sets.NewString(),
+		cpuTopology:        testTopologyDualSocketHT,
+		cpusReserved:       testCPUSReserved,
+		podToCPUS:          make(map[string]cpuset.CPUSet),
+		takeByTopologyFunc: cpumanager.TakeByTopology,
 	}
 
-	return &cgroupCPUSet{
-		podSet: podSet,
+	// If not set, some fields are set to customized default value
+	tccsDefault := &testCgroupCPUSet{}
+	if !reflect.DeepEqual(tccs.podSet, tccsDefault.podSet) {
+		ccs.podSet = tccs.podSet
 	}
+	if !reflect.DeepEqual(tccs.cpuTopology, tccsDefault.cpuTopology) {
+		ccs.cpuTopology = tccs.cpuTopology
+	}
+	if !reflect.DeepEqual(tccs.cpusReserved, tccsDefault.cpusReserved) {
+		ccs.cpusReserved = tccs.cpusReserved
+	}
+	ccs.cpusShared = ccs.cpuTopology.CPUDetails.CPUs().
+		Difference(ccs.cpusReserved)
+	if !reflect.DeepEqual(tccs.cpusShared, tccsDefault.cpusShared) {
+		ccs.cpusShared = tccs.cpusShared
+	}
+	if !reflect.DeepEqual(tccs.podToCPUS, tccsDefault.podToCPUS) {
+		ccs.podToCPUS = tccs.podToCPUS
+	}
+	if !reflect.DeepEqual(tccs.takeByTopologyFunc, tccsDefault.takeByTopologyFunc) {
+		ccs.takeByTopologyFunc = tccs.takeByTopologyFunc
+	}
+
+	return ccs
 }
 
 // Check if the cgroup values in two cgroupCPUSet equal
@@ -100,15 +134,13 @@ func testEqualCgroupCPUSet(t *testing.T,
 
 func TestNewCgroupCPUSet(t *testing.T) {
 	// When success, number of reserved CPUs is 2
-	topologyFake := topologyDualSocketHT
-	cpusAllFake := topologyFake.CPUDetails.CPUs()
-	nodeAllocatableReservationSuccess := v1.ResourceList{
-		v1.ResourceCPU: *resource.NewQuantity(4, resource.DecimalSI),
-	}
+	cpuTopologyFake := testTopologyDualSocketHT
+	cpusAllFake := cpuTopologyFake.CPUDetails.CPUs()
+	nodeAllocatableReservationSuccess := testNodeAllocatableReservationSuccess
 	nodeAllocatableReservationFail := v1.ResourceList{
 		v1.ResourceCPU: *resource.NewQuantity(0, resource.DecimalSI),
 	}
-	cpusReservedSuccess := cpuset.NewCPUSet(0, 2, 12, 14)
+	cpusReservedSuccess := testCPUSReserved
 	cpusReservedFail := cpuset.NewCPUSet()
 	cpusSpecificSuccess := cpuset.NewCPUSet(0, 1, 2, 3)
 	cpusSpecificFail := cpuset.NewCPUSet()
@@ -175,16 +207,16 @@ func TestNewCgroupCPUSet(t *testing.T) {
 				}
 				return cpuset.NewCPUSet(), tc.expErrTopology
 			}
-			ccsExp := &cgroupCPUSet{
+			ccsExp := testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet:             sets.NewString(),
+				cpuTopology:        cpuTopologyFake,
 				cpusReserved:       tc.cpusReservedExp,
 				cpusShared:         cpusAllFake.Difference(tc.cpusReservedExp),
-				topology:           topologyFake,
 				podToCPUS:          make(map[string]cpuset.CPUSet),
 				takeByTopologyFunc: takeByTopologyFunc,
-			}
+			})
 
-			ccs, err := NewCgroupCPUSet(topologyFake, takeByTopologyFunc,
+			ccs, err := NewCgroupCPUSet(cpuTopologyFake, takeByTopologyFunc,
 				tc.cpusSpecific, tc.nodeAllocatableReservation)
 
 			if tc.expErr == nil {
@@ -198,18 +230,7 @@ func TestNewCgroupCPUSet(t *testing.T) {
 }
 
 func TestCgroupCPUSetStart(t *testing.T) {
-	topologyFake := topologyDualSocketHT
-	cpusAllFake := topologyFake.CPUDetails.CPUs()
-	cpusReserved := cpuset.NewCPUSet(0, 6)
-	var takeByTopologyFunc cpumanager.TypeTakeByTopologyFunc
-	ccs := &cgroupCPUSet{
-		podSet:             sets.NewString(),
-		cpusReserved:       cpusReserved,
-		cpusShared:         cpusAllFake.Difference(cpusReserved),
-		topology:           topologyFake,
-		podToCPUS:          make(map[string]cpuset.CPUSet),
-		takeByTopologyFunc: takeByTopologyFunc,
-	}
+	ccs := testGenerateCgroupCPUSet(&testCgroupCPUSet{})
 
 	err := ccs.Start()
 
@@ -235,22 +256,68 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
 			}),
-			pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					UID: "1",
-				},
-			},
+			pod: testGeneratePodCPUSet("1", "", ""),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+			}),
+			expErr: fmt.Errorf("fake error"),
+		},
+		// Tests below is based on default cgroupCPUSet generated by testGenerateCgroupCPUSet above
+		{
+			description: "Fail, pod needs 0 dedicated CPUs (request=limit, empty)",
+			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+			pod:         testGeneratePodCPUSet("1", "", ""),
 			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
 			}),
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
-			description: "Success, simple",
+			description: "Fail, pod is too large to fit into this host",
 			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
-			pod:         testGeneratePodCPUSet("1", "", ""),
+			pod:         testGeneratePodCPUSet("1", "100", "100"),
 			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
+			}),
+			expErr: fmt.Errorf("fake error"),
+		},
+		{
+			description: "Success, pod with (request=limit, int, thread x1)",
+			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+			pod:         testGeneratePodCPUSet("1", "1", "1"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+				},
+			}),
+		},
+		{
+			description: "Success, pod with (request=limit, int, thread x2 -> core x1)",
+			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+			pod:         testGeneratePodCPUSet("1", "2", "2"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(4, 16)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(4, 16),
+				},
+			}),
+		},
+		{
+			description: "Success, pod with (request=limit, int, thread x12 -> node x1)",
+			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+			pod:         testGeneratePodCPUSet("1", "12", "12"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23),
+				},
 			}),
 		},
 	}
@@ -266,7 +333,7 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			assert.Equal(t, tc.ccsAfter, ccs)
+			testEqualCgroupCPUSet(t, tc.ccsAfter, ccs)
 		})
 	}
 }
@@ -292,13 +359,70 @@ func TestCgroupCPUSetRemovePod(t *testing.T) {
 			ccsAfter:    testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
 			expErr:      fmt.Errorf("fake error"),
 		},
+		// Tests below is based on default cgroupCPUSet generated by testGenerateCgroupCPUSet above
 		{
-			description: "Success, simple",
+			description: "Success, one existing pod, without dedicated CPUs",
 			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
 			}),
 			pod:      testGeneratePodCPUSet("1", "", ""),
 			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		},
+		{
+			description: "Success, one existing pod, with dedicated CPUs",
+			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+				},
+			}),
+			pod:      testGeneratePodCPUSet("1", "1", "1"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		},
+		{
+			description: "Success, multiple existing pods, remove pod with dedicated CPUs",
+			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1", "2", "3"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1, 4, 16)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+					"2": cpuset.NewCPUSet(4, 16),
+				},
+			}),
+			pod: testGeneratePodCPUSet("2", "2", "2"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1", "3"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+				},
+			}),
+		},
+		{
+			description: "Success, multiple existing pods, remove pod without dedicated CPUs",
+			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1", "2", "3"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1, 4, 16)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+					"2": cpuset.NewCPUSet(4, 16),
+				},
+			}),
+			pod: testGeneratePodCPUSet("3", "", ""),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1", "2"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1, 4, 16)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+					"2": cpuset.NewCPUSet(4, 16),
+				},
+			}),
 		},
 	}
 
@@ -313,7 +437,7 @@ func TestCgroupCPUSetRemovePod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			assert.Equal(t, tc.ccsAfter, ccs)
+			testEqualCgroupCPUSet(t, tc.ccsAfter, ccs)
 		})
 	}
 }
