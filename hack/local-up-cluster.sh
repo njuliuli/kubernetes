@@ -48,6 +48,9 @@ CGROUPS_PER_QOS=${CGROUPS_PER_QOS:-true}
 CGROUP_DRIVER=${CGROUP_DRIVER:-""}
 # if cgroups per qos is enabled, optionally change cgroup root
 CGROUP_ROOT=${CGROUP_ROOT:-""}
+# set reserved resource
+KUBE_RESERVED=${KUBE_RESERVED:-"cpu=2"}
+SYSTEM_RESERVED=${SYSTEM_RESERVED:-"cpu=2"}
 # owner of client certs, default to current user if not specified
 USER=${USER:-$(whoami)}
 
@@ -767,6 +770,8 @@ function start_kubelet {
       "--cgroups-per-qos=${CGROUPS_PER_QOS}"
       "--cgroup-driver=${CGROUP_DRIVER}"
       "--cgroup-root=${CGROUP_ROOT}"
+      "--kube-reserved=${KUBE_RESERVED}"
+      "--system-reserved=${SYSTEM_RESERVED}"
       "--eviction-hard=${EVICTION_HARD}"
       "--eviction-soft=${EVICTION_SOFT}"
       "--eviction-pressure-transition-period=${EVICTION_PRESSURE_TRANSITION_PERIOD}"
