@@ -33,9 +33,9 @@ import (
 var (
 	// Taken from cpumanager.topoDualSocketHT
 	topologyDualSocketHT = &topology.CPUTopology{
-		NumCPUs:    12,
+		NumCPUs:    14,
 		NumSockets: 2,
-		NumCores:   6,
+		NumCores:   12,
 		CPUDetails: map[int]topology.CPUInfo{
 			0:  {CoreID: 0, SocketID: 0, NUMANodeID: 0},
 			1:  {CoreID: 1, SocketID: 1, NUMANodeID: 1},
@@ -43,12 +43,24 @@ var (
 			3:  {CoreID: 3, SocketID: 1, NUMANodeID: 1},
 			4:  {CoreID: 4, SocketID: 0, NUMANodeID: 0},
 			5:  {CoreID: 5, SocketID: 1, NUMANodeID: 1},
-			6:  {CoreID: 0, SocketID: 0, NUMANodeID: 0},
-			7:  {CoreID: 1, SocketID: 1, NUMANodeID: 1},
-			8:  {CoreID: 2, SocketID: 0, NUMANodeID: 0},
-			9:  {CoreID: 3, SocketID: 1, NUMANodeID: 1},
-			10: {CoreID: 4, SocketID: 0, NUMANodeID: 0},
-			11: {CoreID: 5, SocketID: 1, NUMANodeID: 1},
+			6:  {CoreID: 6, SocketID: 0, NUMANodeID: 0},
+			7:  {CoreID: 7, SocketID: 1, NUMANodeID: 1},
+			8:  {CoreID: 8, SocketID: 0, NUMANodeID: 0},
+			9:  {CoreID: 9, SocketID: 1, NUMANodeID: 1},
+			10: {CoreID: 10, SocketID: 0, NUMANodeID: 0},
+			11: {CoreID: 11, SocketID: 1, NUMANodeID: 1},
+			12: {CoreID: 0, SocketID: 0, NUMANodeID: 0},
+			13: {CoreID: 1, SocketID: 1, NUMANodeID: 1},
+			14: {CoreID: 2, SocketID: 0, NUMANodeID: 0},
+			15: {CoreID: 3, SocketID: 1, NUMANodeID: 1},
+			16: {CoreID: 4, SocketID: 0, NUMANodeID: 0},
+			17: {CoreID: 5, SocketID: 1, NUMANodeID: 1},
+			18: {CoreID: 6, SocketID: 0, NUMANodeID: 0},
+			19: {CoreID: 7, SocketID: 1, NUMANodeID: 1},
+			20: {CoreID: 8, SocketID: 0, NUMANodeID: 0},
+			21: {CoreID: 9, SocketID: 1, NUMANodeID: 1},
+			22: {CoreID: 10, SocketID: 0, NUMANodeID: 0},
+			23: {CoreID: 11, SocketID: 1, NUMANodeID: 1},
 		},
 	}
 )
@@ -91,14 +103,14 @@ func TestNewCgroupCPUSet(t *testing.T) {
 	topologyFake := topologyDualSocketHT
 	cpusAllFake := topologyFake.CPUDetails.CPUs()
 	nodeAllocatableReservationSuccess := v1.ResourceList{
-		v1.ResourceCPU: *resource.NewQuantity(2, resource.DecimalSI),
+		v1.ResourceCPU: *resource.NewQuantity(4, resource.DecimalSI),
 	}
 	nodeAllocatableReservationFail := v1.ResourceList{
 		v1.ResourceCPU: *resource.NewQuantity(0, resource.DecimalSI),
 	}
-	cpusReservedSuccess := cpuset.NewCPUSet(0, 6)
+	cpusReservedSuccess := cpuset.NewCPUSet(0, 2, 12, 14)
 	cpusReservedFail := cpuset.NewCPUSet()
-	cpusSpecificSuccess := cpuset.NewCPUSet(0, 1)
+	cpusSpecificSuccess := cpuset.NewCPUSet(0, 1, 2, 3)
 	cpusSpecificFail := cpuset.NewCPUSet()
 
 	testCaseArray := []struct {
