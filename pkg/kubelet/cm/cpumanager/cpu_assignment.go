@@ -146,7 +146,11 @@ func (a *cpuAccumulator) isFailed() bool {
 	return a.numCPUsNeeded > a.details.CPUs().Size()
 }
 
-func takeByTopology(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
+// TypeTakeByTopologyFunc is the type for function cpumanager.TakeByTopology() below
+type TypeTakeByTopologyFunc func(topo *topology.CPUTopology,
+	availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error)
+
+func TakeByTopology(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
 	acc := newCPUAccumulator(topo, availableCPUs, numCPUs)
 	if acc.isSatisfied() {
 		return acc.result, nil

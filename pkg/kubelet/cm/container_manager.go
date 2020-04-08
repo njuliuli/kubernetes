@@ -41,6 +41,9 @@ import (
 
 type ActivePodsFunc func() []*v1.Pod
 
+// the type for ContainerManager.NewPodContainerManager()
+type typeNewPodContainerManager func() PodContainerManager
+
 // Manages the containers running on a machine.
 type ContainerManager interface {
 	// Runs the container manager's housekeeping.

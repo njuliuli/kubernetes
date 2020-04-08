@@ -50,6 +50,7 @@ import (
 	podresourcesapi "k8s.io/kubernetes/pkg/kubelet/apis/podresources/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/devicemanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
@@ -335,8 +336,16 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	// Initialize policy manager
-	cm.policyManager, err = NewPolicyManager(cgroupManager,
-		cm.NewPodContainerManager)
+	cpuTopology, err := topology.Discover(machineInfo, numaNodeInfo)
+	if err != nil {
+		return nil, err
+	}
+	klog.Infof("[policymanager] detected CPU topology: %v", cpuTopology)
+	cm.policyManager, err = NewPolicyManager(NewCgroupCPUCFS, NewCgroupCPUSet,
+		cgroupManager, cm.NewPodContainerManager, cpuTopology,
+		nodeConfig.NodeAllocatableConfig.ReservedSystemCPUs,
+		cm.GetNodeAllocatableReservation(),
+	)
 	if err != nil {
 		klog.Errorf("[policymanager] Failed to initialize policy manager: %v", err)
 		return nil, err

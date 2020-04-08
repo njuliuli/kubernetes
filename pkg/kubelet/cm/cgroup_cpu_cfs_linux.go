@@ -87,9 +87,6 @@ func getCPUQuota(resourceLimits v1.ResourceList, cpuPeriod int64) (cpuQuota int6
 	return cpuQuota
 }
 
-// the type used to pass in ContainerManager.NewPodContainerManager()
-type typeNewPodContainerManager func() PodContainerManager
-
 // cgroupCPUCFS is used to manage all CFS related cgroup values,
 // such as cpu.shares, cpu.cfs_period_us, and cpu.cfs_quota_us.
 type cgroupCPUCFS struct {
@@ -117,6 +114,10 @@ type cgroupCPUCFS struct {
 }
 
 var _ Cgroup = &cgroupCPUCFS{}
+
+// typeNewCgroupCPUCFS is the type for function cm.NewCgroupCPUCFS below
+type typeNewCgroupCPUCFS func(cgroupManager CgroupManager,
+	newPodContainerManager typeNewPodContainerManager) (Cgroup, error)
 
 // NewCgroupCPUCFS creates cgroupCPUCFS
 func NewCgroupCPUCFS(cgroupManager CgroupManager,
@@ -153,6 +154,10 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 	if ccc.podSet.Has(podUID) {
 		return fmt.Errorf("pod (%q) already added to cgroupCPUCFS", pod.Name)
 	}
+	// TODO(li) Do we need to defer insertion only if "rerr != nil"?
+	// Maybe not necessary, since the same pod will not be added twice.
+	// Then maybe clean up of failed adding pod is needed
+	// when anything before cgroup update failed?
 	ccc.podSet.Insert(podUID)
 
 	// Write cgroup values for this pod to host

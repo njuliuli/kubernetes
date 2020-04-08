@@ -77,8 +77,8 @@ func testCopyUint64(value uint64) *uint64 {
 	return &value
 }
 
-// Check if the cgroup values change
-func testIsCgroupCPUCFSDifferent(t *testing.T,
+// Check if the cgroup values in two cgroupCPUCFS equal
+func testEqualCgroupCPUCFS(t *testing.T,
 	expect *cgroupCPUCFS, actual *cgroupCPUCFS) {
 	assert.Equal(t, expect.podSet, actual.podSet)
 	assert.Equal(t, expect.podToCPUShares, actual.podToCPUShares)
@@ -335,7 +335,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 
 			err := ccc.AddPod(tc.pod)
 
-			testIsCgroupCPUCFSDifferent(t, tc.cccAfter, ccc)
+			testEqualCgroupCPUCFS(t, tc.cccAfter, ccc)
 			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
@@ -445,7 +445,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			testIsCgroupCPUCFSDifferent(t, tc.cccAfter, ccc)
+			testEqualCgroupCPUCFS(t, tc.cccAfter, ccc)
 		})
 	}
 }

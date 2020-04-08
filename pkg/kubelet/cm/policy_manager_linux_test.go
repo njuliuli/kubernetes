@@ -26,6 +26,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
+	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
 // Generate pod with given fields set
@@ -62,13 +65,79 @@ func testGeneratePodPolicy(policy string) *v1.Pod {
 	return testGeneratePod(policy, "", "", "")
 }
 
-// TODO(li) We need to test on failing cases,
-// by figuring out how to pass "fake" NewCgroupCPUCFS() to return error
-func TestNewPolicyManager(t *testing.T) {
-	_, err := NewPolicyManager(new(MockCgroupManager),
-		fakeNewPodContainerManager)
+// Check if the cgroup values in two policyManagerImpl equal
+func testEqualPolicyManagerImpl(t *testing.T,
+	expect *policyManagerImpl, actual *policyManagerImpl) {
+	assert.Equal(t, expect.cgroupCPUCFS, actual.cgroupCPUCFS)
+	assert.Equal(t, expect.cgroupCPUSet, actual.cgroupCPUSet)
+}
 
-	assert.Nil(t, err, "Creating PolicyManager failed")
+func TestNewPolicyManager(t *testing.T) {
+	cpuTopologyFake := &cputopology.CPUTopology{}
+	cpusSpecificFake := cpuset.NewCPUSet()
+	nodeAllocatableReservationFake := v1.ResourceList{}
+	cgroupCPUCFSFake := &cgroupCPUCFS{}
+	cgroupCPUSetFake := &cgroupCPUSet{}
+	policyManagerFake := &policyManagerImpl{
+		cgroupCPUCFS: cgroupCPUCFSFake,
+		cgroupCPUSet: cgroupCPUSetFake,
+	}
+
+	testCaseArray := []struct {
+		description  string
+		expErrCPUCFS error
+		expErrCPUSet error
+		expErr       error
+	}{
+		{
+			description: "Success, simple",
+		},
+		{
+			description:  "Fail, error from expErrCPUCFS.Start()",
+			expErrCPUCFS: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
+		},
+		{
+			description:  "Fail, error from expErrCPUSet.Start()",
+			expErrCPUSet: fmt.Errorf("fake error"),
+			expErr:       fmt.Errorf("fake error"),
+		},
+	}
+
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			newCgroupCPUCFS := func(cgroupManager CgroupManager,
+				newPodContainerManager typeNewPodContainerManager) (Cgroup, error) {
+				if tc.expErrCPUCFS != nil {
+					return nil, tc.expErrCPUCFS
+				}
+				return cgroupCPUCFSFake, nil
+			}
+
+			newCgroupCPUSet := func(cpuTopology *cputopology.CPUTopology,
+				takeByTopologyFunc cpumanager.TypeTakeByTopologyFunc,
+				cpusSpecific cpuset.CPUSet,
+				nodeAllocatableReservation v1.ResourceList) (Cgroup, error) {
+				if tc.expErrCPUSet != nil {
+					return nil, tc.expErrCPUSet
+				}
+				return cgroupCPUSetFake, nil
+			}
+
+			newPolicyManager, err := NewPolicyManager(newCgroupCPUCFS, newCgroupCPUSet,
+				new(MockCgroupManager), fakeNewPodContainerManager,
+				cpuTopologyFake, cpusSpecificFake, nodeAllocatableReservationFake)
+
+			if tc.expErr == nil {
+				assert.Nil(t, err)
+				testEqualPolicyManagerImpl(t, policyManagerFake,
+					newPolicyManager.(*policyManagerImpl))
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+
 }
 
 func TestPolicyManagerStart(t *testing.T) {

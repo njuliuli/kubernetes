@@ -374,7 +374,7 @@ func TestTakeByTopology(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result, err := takeByTopology(tc.topo, tc.availableCPUs, tc.numCPUs)
+		result, err := TakeByTopology(tc.topo, tc.availableCPUs, tc.numCPUs)
 		if tc.expErr != "" && err.Error() != tc.expErr {
 			t.Errorf("expected error to be [%v] but it was [%v] in test \"%s\"", tc.expErr, err, tc.description)
 		}

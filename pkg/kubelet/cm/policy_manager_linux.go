@@ -22,6 +22,9 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
+	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
 // policy names for v1.Pod.Spec.Policy
@@ -51,15 +54,21 @@ type policyManagerImpl struct {
 var _ PolicyManager = &policyManagerImpl{}
 
 // NewPolicyManager creates PolicyManager for pod level cgroup values
-func NewPolicyManager(cgroupManager CgroupManager,
-	newPodContainerManager typeNewPodContainerManager) (PolicyManager, error) {
+func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
+	newCgroupCPUSet typeNewCgroupCPUSet,
+	cgroupManager CgroupManager,
+	newPodContainerManager typeNewPodContainerManager,
+	cpuTopology *cputopology.CPUTopology,
+	cpusSpecific cpuset.CPUSet,
+	nodeAllocatableReservation v1.ResourceList) (PolicyManager, error) {
 	klog.Infof("[policymanager] Create policyManagerImpl")
 
-	cgroupCPUCFS, err := NewCgroupCPUCFS(cgroupManager, newPodContainerManager)
+	cgroupCPUCFS, err := newCgroupCPUCFS(cgroupManager, newPodContainerManager)
 	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUCFS, %q", err)
 	}
-	cgroupCPUSet, err := NewCgroupCPUSet()
+	cgroupCPUSet, err := newCgroupCPUSet(cpuTopology,
+		cpumanager.TakeByTopology, cpusSpecific, nodeAllocatableReservation)
 	if err != nil {
 		return nil, fmt.Errorf("fail to create cgroupCPUSet, %q", err)
 	}
