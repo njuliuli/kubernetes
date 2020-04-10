@@ -77,6 +77,12 @@ func testGeneratePodCPUSet(uid, cpuRequest, cpuLimit string) *v1.Pod {
 	return testGeneratePod(policyCPUSet, uid, cpuRequest, cpuLimit)
 }
 
+// Make a copy of string and return pointer to it.
+// This is needed to fill ResourceConfig with fields' default value being nil.
+func testCopyString(value string) *string {
+	return &value
+}
+
 // testCgroupCPUSet is used to generate cgroupCPUSet using in test
 type testCgroupCPUSet struct {
 	podSet             sets.String
@@ -238,12 +244,18 @@ func TestCgroupCPUSetStart(t *testing.T) {
 }
 
 func TestCgroupCPUSetAddPod(t *testing.T) {
+	// No existing pod in cgroupCPUSet
+	cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
+	cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
+
 	testCaseArray := []struct {
-		description string
-		ccsBefore   *cgroupCPUSet
-		pod         *v1.Pod
-		ccsAfter    *cgroupCPUSet
-		expErr      error
+		description         string
+		ccsBefore           *cgroupCPUSet
+		pod                 *v1.Pod
+		ccsAfter            *cgroupCPUSet
+		cgroupConfig        *CgroupConfig
+		expErrCgroupManager error
+		expErr              error
 	}{
 		{
 			description: "Fail, pod not existed",
@@ -282,6 +294,27 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
+			description: "Fail, error in calling CgroupManager.Update(...)",
+			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+			pod:         testGeneratePodCPUSet("1", "1", "1"),
+			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString("1"),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					"1": cpuset.NewCPUSet(1),
+				},
+			}),
+			cgroupConfig: &CgroupConfig{
+				Name: cgroupName,
+				ResourceParameters: &ResourceConfig{
+					CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+				},
+			},
+			expErrCgroupManager: fmt.Errorf("fake error"),
+			expErr:              fmt.Errorf("fake error"),
+		},
+		{
 			description: "Success, pod with (request=limit, int, thread x1)",
 			ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
 			pod:         testGeneratePodCPUSet("1", "1", "1"),
@@ -293,6 +326,12 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 					"1": cpuset.NewCPUSet(1),
 				},
 			}),
+			cgroupConfig: &CgroupConfig{
+				Name: cgroupName,
+				ResourceParameters: &ResourceConfig{
+					CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+				},
+			},
 		},
 		{
 			description: "Success, pod with (request=limit, int, thread x2 -> core x1)",
@@ -306,6 +345,12 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 					"1": cpuset.NewCPUSet(4, 16),
 				},
 			}),
+			cgroupConfig: &CgroupConfig{
+				Name: cgroupName,
+				ResourceParameters: &ResourceConfig{
+					CpusetCpus: testCopyString(cpuset.NewCPUSet(4, 16).String()),
+				},
+			},
 		},
 		{
 			description: "Success, pod with (request=limit, int, thread x12 -> node x1)",
@@ -319,23 +364,58 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 					"1": cpuset.NewCPUSet(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23),
 				},
 			}),
+			cgroupConfig: &CgroupConfig{
+				Name: cgroupName,
+				ResourceParameters: &ResourceConfig{
+					CpusetCpus: testCopyString(cpuset.NewCPUSet(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23).String()),
+				},
+			},
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			ccs := tc.ccsBefore
+			pcmMock := new(MockPodContainerManager)
+			pcmMock.On("GetPodContainerName", tc.pod).
+				Return(cgroupName, cgroupPath)
+			ccs.newPodContainerManager = func() PodContainerManager {
+				return pcmMock
+			}
+			cmMock := new(MockCgroupManager)
+			// CgroupManager.Update(...) is only called at the last step
+			if tc.expErr == nil {
+				cmMock.On("Update", tc.cgroupConfig).
+					Return(tc.expErrCgroupManager).
+					Once()
+			} else if tc.expErrCgroupManager != nil {
+				cmMock.On("Update", tc.cgroupConfig).
+					Return(tc.expErrCgroupManager).
+					Once()
+			}
+			ccs.cgroupManager = cmMock
+			ccs.activePodsFunc = func() []*v1.Pod {
+				return []*v1.Pod{tc.pod}
+			}
 
 			err := ccs.AddPod(tc.pod)
 
+			testEqualCgroupCPUSet(t, tc.ccsAfter, ccs)
 			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
 			}
-			testEqualCgroupCPUSet(t, tc.ccsAfter, ccs)
+			if tc.expErr == nil {
+				cmMock.AssertExpectations(t)
+			} else if tc.expErrCgroupManager != nil {
+				cmMock.AssertExpectations(t)
+			}
 		})
 	}
+
+	// For multiple existing pods in cgroupCPUSet
+
 }
 
 func TestCgroupCPUSetRemovePod(t *testing.T) {
@@ -402,6 +482,7 @@ func TestCgroupCPUSetRemovePod(t *testing.T) {
 				},
 			}),
 		},
+		// For multiple existing pods
 		{
 			description: "Success, multiple existing pods, remove pod without dedicated CPUs",
 			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{

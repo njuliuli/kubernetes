@@ -17,7 +17,7 @@ limitations under the License.
 package cm
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -31,6 +31,8 @@ type ResourceConfig struct {
 	CpuQuota *int64
 	// CPU quota period.
 	CpuPeriod *uint64
+	// CPU to use
+	CpusetCpus *string
 	// HugePageLimit map from page size (in bytes) to limit (in bytes)
 	HugePageLimit map[int64]int64
 	// Maximum number of pids

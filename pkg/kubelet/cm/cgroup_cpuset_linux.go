@@ -56,6 +56,17 @@ type cgroupCPUSet struct {
 	// For example: Given a system with 8 CPUs available and HT enabled,
 	// if numReservedCPUs=2, then reserved={0,4}
 	takeByTopologyFunc cpumanager.TypeTakeByTopologyFunc
+
+	// activePodsFunc is a method for listing active pods on the node
+	activePodsFunc ActivePodsFunc
+
+	// Interface for cgroup management
+	cgroupManager CgroupManager
+
+	// newPodContainerManager is a factory method returns PodContainerManager,
+	// which is the interface to stores and manages pod level containers.
+	// We use factory method since ContainerManager do it this way.
+	newPodContainerManager typeNewPodContainerManager
 }
 
 var _ Cgroup = &cgroupCPUSet{}
@@ -148,7 +159,18 @@ func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
 	// this pod is assumed to use the shared pool, no matter the pod.Spec.
 	// It happens in cased such as pod is too large or dedicated number is 0.
 	if err := ccs.addPodUpdate(pod); err != nil {
-		return err
+		return fmt.Errorf("addPodUpdate fail with error %v", err)
+	}
+
+	// Write cgroup values of all pods to host
+	for _, pod := range ccs.activePodsFunc() {
+		cgroupConfig := ccs.readResourceConfig(pod)
+		klog.Infof("[policymanager] Pod (%q), readResourceConfig() return CgroupConfig\n %+v",
+			pod.Name, cgroupConfig)
+
+		if err := ccs.cgroupManager.Update(cgroupConfig); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -177,7 +199,8 @@ func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) (rerr error) {
 	cpusPod, err := ccs.takeByTopologyFunc(ccs.cpuTopology, ccs.cpusShared,
 		cpusPodNum)
 	if err != nil {
-		return err
+		return fmt.Errorf("skip pod (%q) that fails takeByTopologyFunc with error %v",
+			pod.Name, err)
 	}
 
 	ccs.podToCPUS[string(pod.UID)] = cpusPod
@@ -186,6 +209,55 @@ func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) (rerr error) {
 	klog.Infof("[policymanager] cgroupCPUSet (%+v) after addPodUpdate", ccs)
 
 	return nil
+}
+
+// Get CgroupConfig for this pod from stored cgroup values
+func (ccs *cgroupCPUSet) readResourceConfig(pod *v1.Pod) *CgroupConfig {
+	podUID := string(pod.UID)
+
+	// TODO(li) When activePods and ccs.podSet are different?
+	if !ccs.podSet.Has(podUID) {
+		klog.Infof("[policymanager] Pod (%q) in activePods, but not tracked by cgroupCPUSet.\n %+v",
+			pod.Name, pod)
+	}
+
+	// Read cgroup values
+	var cpus string
+	if cpusPod, found := ccs.podToCPUS[podUID]; found {
+		klog.Infof("[policymanager] Pod (%q) belong to cpusDedicated pool.",
+			pod.Name)
+		cpus = cpusPod.String()
+	} else if !ccs.podSet.Has(podUID) {
+		klog.Infof("[policymanager] Pod (%q) in activePods, but not tracked by cgroupCPUSet.\n %+v",
+			pod.Name, pod)
+		klog.Infof("[policymanager] Pod (%q) belongs to cpusReserved pool.",
+			pod.Name)
+		cpus = ccs.cpusReserved.String()
+	} else if ccs.isSystemPod(pod) {
+		klog.Infof("[policymanager] Pod (%q) belongs to cpusReserved pool.",
+			pod.Name)
+		cpus = ccs.cpusReserved.String()
+	} else {
+		klog.Infof("[policymanager] Pod (%q) belongs to cpusShared pool.",
+			pod.Name)
+		cpus = ccs.cpusReserved.String()
+	}
+
+	// Get cgroup path to this pod
+	pcm := ccs.newPodContainerManager()
+	cgroupName, _ := pcm.GetPodContainerName(pod)
+
+	return &CgroupConfig{
+		Name: cgroupName,
+		ResourceParameters: &ResourceConfig{
+			CpusetCpus: &cpus,
+		},
+	}
+}
+
+// check if this pod belong to cpusReserved pool
+func (ccs *cgroupCPUSet) isSystemPod(pod *v1.Pod) bool {
+	return false
 }
 
 func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {

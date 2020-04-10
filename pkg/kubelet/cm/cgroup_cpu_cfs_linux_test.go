@@ -321,7 +321,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				return pcmMock
 			}
 			cmMock := new(MockCgroupManager)
-			// Only check if CgroupManager.Update(...) is correctly called
+			// CgroupManager.Update(...) is only called at the last step
 			if tc.expErr == nil {
 				cmMock.On("Update", tc.cgroupConfig).
 					Return(tc.expErrCgroupManager).
