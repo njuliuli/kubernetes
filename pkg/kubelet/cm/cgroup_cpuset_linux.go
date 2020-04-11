@@ -221,3 +221,7 @@ func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {
 
 	return nil
 }
+
+func (ccs *cgroupCPUSet) UpdatePod(pod *v1.Pod) (rerr error) {
+	return nil
+}

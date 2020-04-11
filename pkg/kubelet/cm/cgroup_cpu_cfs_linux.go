@@ -298,3 +298,7 @@ func (ccc *cgroupCPUCFS) RemovePod(pod *v1.Pod) (rerr error) {
 
 	return nil
 }
+
+func (ccc *cgroupCPUCFS) UpdatePod(pod *v1.Pod) (rerr error) {
+	return nil
+}

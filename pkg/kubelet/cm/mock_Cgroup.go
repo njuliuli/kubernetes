@@ -53,3 +53,17 @@ func (_m *MockCgroup) Start() error {
 
 	return r0
 }
+
+// UpdatePod provides a mock function with given fields: pod
+func (_m *MockCgroup) UpdatePod(pod *v1.Pod) error {
+	ret := _m.Called(pod)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(*v1.Pod) error); ok {
+		r0 = rf(pod)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}

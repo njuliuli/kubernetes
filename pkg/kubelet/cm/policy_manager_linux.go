@@ -35,8 +35,9 @@ const (
 	policyUnknown  = "unknown"
 
 	// action name for calling updatePodInCgroup(...)
-	actionAddPod    = "add-pod"
-	actionRemovePod = "remove-pod"
+	actionAddPod    = "action-add-pod"
+	actionRemovePod = "action-remove-pod"
+	actionUpdatePod = "action-update-pod"
 )
 
 // getPodPolicy return per-task policy,
@@ -107,28 +108,59 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	// for CPUCFS, mode is unknown.
 	// But in those cases, the failed pod is tracked,
 	// and default value will be returned in the next writeHost step.
+
+	isUpdateFailed := false
+	// Even if partial or no change is made, writing to host is needed.
+	// So execution continue even got error here.
 	if err := p.updatePodByPolicy(pod, actionAddPod); err != nil {
-		return err
+		klog.Infof("[policymanager] actionAddPod fails with error\n %v",
+			err)
+		isUpdateFailed = true
+	}
+
+	if err := p.updatePodByPolicy(pod, actionUpdatePod); err != nil {
+		klog.Infof("[policymanager] actionUpdatePod fails with error\n %v",
+			err)
+		isUpdateFailed = true
+	}
+
+	if isUpdateFailed {
+		return fmt.Errorf("updatePodByPolicy fails")
 	}
 
 	return nil
 }
 
 func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
+	isUpdateFailed := false
 	if err := p.updatePodByPolicy(pod, actionRemovePod); err != nil {
-		return err
+		klog.Infof("[policymanager] actionRemovePod fails with error\n %v",
+			err)
+		isUpdateFailed = true
+	}
+
+	if err := p.updatePodByPolicy(pod, actionUpdatePod); err != nil {
+		klog.Infof("[policymanager] actionUpdatePod fails with error\n %v",
+			err)
+		isUpdateFailed = true
+	}
+
+	if isUpdateFailed {
+		return fmt.Errorf("updatePodByPolicy fails")
 	}
 
 	return nil
 }
 
 // updatePod add/remove pod using Cgroup.AddPod/RemovePod()
-func updatePodInCgroup(pod *v1.Pod, cgroup Cgroup, action string, mode string) (rerr error) {
+func actionInCgroup(pod *v1.Pod, cgroup Cgroup, action string, mode string) (rerr error) {
 	switch action {
 	case actionAddPod:
 		rerr = cgroup.AddPod(pod, mode)
 	case actionRemovePod:
 		rerr = cgroup.RemovePod(pod)
+	case actionUpdatePod:
+		rerr = cgroup.UpdatePod(pod)
 	default:
 		return fmt.Errorf("action (%q) should be in set {%q, %q}",
 			action, actionAddPod, actionRemovePod)
@@ -158,7 +190,7 @@ func (p *policyManagerImpl) updatePodByPolicy(pod *v1.Pod, action string) (rerr 
 	case policyCPUCFS:
 		klog.Infof("[policymanager] Update cgroupCPUCFS for pod (%q), mode (%q)",
 			pod.Name, modeCPUCFSDefault)
-		if err := updatePodInCgroup(pod, p.cgroupCPUCFS, action, modeCPUCFSDefault); err != nil {
+		if err := actionInCgroup(pod, p.cgroupCPUCFS, action, modeCPUCFSDefault); err != nil {
 			klog.Infof("cgroupCPUCFS fails with error\n %v", err)
 			isFailed = true
 		}
@@ -174,7 +206,7 @@ func (p *policyManagerImpl) updatePodByPolicy(pod *v1.Pod, action string) (rerr 
 	}
 	klog.Infof("[policymanager] Update cgroupCPUSet for pod (%q), mode (%q)",
 		pod.Name, modeCPUSet)
-	if err := updatePodInCgroup(pod, p.cgroupCPUSet, action, modeCPUSet); err != nil {
+	if err := actionInCgroup(pod, p.cgroupCPUSet, action, modeCPUSet); err != nil {
 		klog.Infof("cgroupCPUSet fails with error\n %v", err)
 		isFailed = true
 	}
