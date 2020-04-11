@@ -12,13 +12,13 @@ type MockCgroup struct {
 	mock.Mock
 }
 
-// AddPod provides a mock function with given fields: pod
-func (_m *MockCgroup) AddPod(pod *v1.Pod) error {
-	ret := _m.Called(pod)
+// AddPod provides a mock function with given fields: pod, mode
+func (_m *MockCgroup) AddPod(pod *v1.Pod, mode string) error {
+	ret := _m.Called(pod, mode)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.Pod) error); ok {
-		r0 = rf(pod)
+	if rf, ok := ret.Get(0).(func(*v1.Pod, string) error); ok {
+		r0 = rf(pod, mode)
 	} else {
 		r0 = ret.Error(0)
 	}

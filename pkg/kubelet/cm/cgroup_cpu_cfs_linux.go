@@ -26,9 +26,13 @@ import (
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 )
 
-// Share const (SharesPerCPU, MilliCPUToCPU) in pkg/kubelet/cm/helper_linux.go
-// for units conversion
 const (
+	// mode name for calling AddPod(...)
+	modeCPUCFSDefault = "mode-cpu-cfs-default"
+	modeCPUCFSUnknown = "mode-cpu-cfs-unknown"
+
+	// Share const (SharesPerCPU, MilliCPUToCPU) in pkg/kubelet/cm/helper_linux.go
+	// for units conversion
 	// 2ms
 	cpuSharesMin = 2
 	// 100000 -> 100ms
@@ -142,7 +146,7 @@ func (ccc *cgroupCPUCFS) Start() (rerr error) {
 	return nil
 }
 
-func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
+func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod, mode string) (rerr error) {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
@@ -161,9 +165,15 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 	ccc.podSet.Insert(podUID)
 
 	// Write cgroup values for this pod to host
-	if err := ccc.addPodUpdate(pod); err != nil {
-		return err
+	switch mode {
+	case modeCPUCFSDefault:
+		if err := ccc.addPodUpdate(pod); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("mode (%q) not supported", mode)
 	}
+
 	cgroupConfig := ccc.readResourceConfig(pod)
 	if err := ccc.cgroupManager.Update(cgroupConfig); err != nil {
 		return err

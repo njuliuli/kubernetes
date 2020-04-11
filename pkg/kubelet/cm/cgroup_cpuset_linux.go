@@ -30,6 +30,13 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
+const (
+	// mode name for calling AddPod(...)
+	modeCPUSetDefault   = "mode-cpuset-default"
+	modeCPUSetUnknown   = "mode-cpuset-unknown"
+	modeCPUSetDedicated = "mode-cpuset-dedicated"
+)
+
 // cgroupCPUSet is used to manage all cpuset related cgroup values,
 // such as cpuset.cpus.
 type cgroupCPUSet struct {
@@ -128,7 +135,7 @@ func (ccs *cgroupCPUSet) Start() (rerr error) {
 	return nil
 }
 
-func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
+func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod, mode string) (rerr error) {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
@@ -143,12 +150,15 @@ func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
 	ccs.podSet.Insert(podUID)
 
 	// Write cgroup values for this pod to host
-	// TODO(li) For now, when adding pod failed here, cgroupCPUSet is not changed.
-	// As a result,
-	// this pod is assumed to use the shared pool, no matter the pod.Spec.
-	// It happens in cased such as pod is too large or dedicated number is 0.
-	if err := ccs.addPodUpdate(pod); err != nil {
-		return err
+	switch mode {
+	case modeCPUSetDefault:
+		klog.Infof("[policymanager] Pod (%q) will use cpusShared pool", pod.Name)
+	case modeCPUSetDedicated:
+		if err := ccs.addPodUpdate(pod); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("mode (%q) not supported", mode)
 	}
 
 	return nil

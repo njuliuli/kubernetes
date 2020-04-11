@@ -26,7 +26,7 @@ type Cgroup interface {
 	Start() error
 	// Add a new pod to State, only called by PolicyManager,
 	// being idempotent
-	AddPod(pod *v1.Pod) error
+	AddPod(pod *v1.Pod, mode string) error
 	// Remove an existing pod from policy manager, only called by PolicyManager
 	// being idempotent
 	RemovePod(pod *v1.Pod) error
