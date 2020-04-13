@@ -188,62 +188,115 @@ func TestPolicyManagerStart(t *testing.T) {
 
 func TestPolicyManagerAddPod(t *testing.T) {
 	testCaseArray := []struct {
-		description  string
-		pod          *v1.Pod
-		expErrCPUCFS error
-		expErrCPUSet error
-		expErr       error
+		description           string
+		pod                   *v1.Pod
+		expErrCPUCFSAddPod    error
+		expErrCPUCFSUpdatePod error
+		expErrCPUSetAddPod    error
+		expErrCPUSetUpdatePod error
+		expErr                error
 	}{
+		// Not any Cgroup is reached
 		{
-			description: "Success, policy=policyCPUCSF",
-			pod:         testGeneratePodPolicy(policyCPUCFS),
-		},
-		{
-			description: "Success, policy=policyCPUSet",
-			pod:         testGeneratePodPolicy(policyCPUSet),
+			description: "Fail, pod not existed",
+			expErr:      fmt.Errorf("fake error"),
 		},
 		{
 			description: "Fail, policy unknown",
 			pod:         testGeneratePodPolicy(policyUnknown),
 			expErr:      fmt.Errorf("fake error"),
 		},
+		// For all pods, all host-global Cgroup are updated
 		{
-			description: "Fail, pod not existed",
-			expErr:      fmt.Errorf("fake error"),
+			description: "Success, policy=policyDefault",
+			pod:         testGeneratePodPolicy(policyDefault),
 		},
 		{
-			description:  "Fail, policy=policyCPUCSF, error from cgroupCPUCFS.AddPod()",
-			pod:          testGeneratePodPolicy(policyCPUCFS),
-			expErrCPUCFS: fmt.Errorf("fake error"),
-			expErr:       fmt.Errorf("fake error"),
+			description:        "Fail, policy=policyDefault, error from cgroupCPUSet.AddPod()",
+			pod:                testGeneratePodPolicy(policyDefault),
+			expErrCPUSetAddPod: fmt.Errorf("fake error"),
+			expErr:             fmt.Errorf("fake error"),
 		},
 		{
-			description:  "Fail, policy=policyCPUSet, error from cgroupCPUSet.AddPod()",
-			pod:          testGeneratePodPolicy(policyCPUSet),
-			expErrCPUSet: fmt.Errorf("fake error"),
-			expErr:       fmt.Errorf("fake error"),
+			description:           "Fail, policy=policyDefault, error from cgroupCPUSet.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyDefault),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyDefault, error from cgroupCPUSet.AddPod() and .UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyDefault),
+			expErrCPUSetAddPod:    fmt.Errorf("fake error"),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description: "Success, policy=policyIsolated",
+			pod:         testGeneratePodPolicy(policyIsolated),
+		},
+		{
+			description:        "Fail, policy=policyIsolated, error from cgroupCPUSet.AddPod()",
+			pod:                testGeneratePodPolicy(policyIsolated),
+			expErrCPUSetAddPod: fmt.Errorf("fake error"),
+			expErr:             fmt.Errorf("fake error"),
+		},
+		// For some pods with specific policies, extra pod-local Cgroup are updated
+		{
+			description: "Success, policy=policyCPUCSF",
+			pod:         testGeneratePodPolicy(policyCPUCFS),
+		},
+		{
+			description:        "Fail, policy=policyCPUCFS, error from cgroupCPUSet.AddPod()",
+			pod:                testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetAddPod: fmt.Errorf("fake error"),
+			expErr:             fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUSet.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description:        "Fail, policy=policyCPUCFS, error from cgroupCPUCFS.AddPod()",
+			pod:                testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFSAddPod: fmt.Errorf("fake error"),
+			expErr:             fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUCFS.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFSUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUCFS and cgroupCPUSet",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetAddPod:    fmt.Errorf("fake error"),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErrCPUCFSAddPod:    fmt.Errorf("fake error"),
+			expErrCPUCFSUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			cgroupCPUCFSMock := new(MockCgroup)
-			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUCFS {
-				cgroupCPUCFSMock.
-					On("AddPod", tc.pod).
-					Return(tc.expErrCPUCFS).
-					Once()
-			}
 			cgroupCPUSetMock := new(MockCgroup)
-			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUSet {
-				cgroupCPUSetMock.
-					On("AddPod", tc.pod).
-					Return(tc.expErrCPUSet).
-					Once()
+			cgroupCPUCFSMock := new(MockCgroup)
+			if tc.pod != nil && getPodPolicy(tc.pod) != policyUnknown {
+				cgroupCPUSetMock.On("AddPod", tc.pod).
+					Return(tc.expErrCPUSetAddPod).Once()
+				cgroupCPUSetMock.On("UpdatePod", tc.pod).
+					Return(tc.expErrCPUSetUpdatePod).Once()
+				cgroupCPUCFSMock.On("AddPod", tc.pod).
+					Return(tc.expErrCPUCFSAddPod).Once()
+				cgroupCPUCFSMock.On("UpdatePod", tc.pod).
+					Return(tc.expErrCPUCFSUpdatePod).Once()
 			}
 			pm := policyManagerImpl{
-				cgroupCPUCFS: cgroupCPUCFSMock,
 				cgroupCPUSet: cgroupCPUSetMock,
+				cgroupCPUCFS: cgroupCPUCFSMock,
 			}
 
 			err := pm.AddPod(tc.pod)
@@ -253,72 +306,114 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			if tc.pod != nil {
-				switch tc.pod.Spec.Policy {
-				case policyCPUCFS:
-					cgroupCPUCFSMock.AssertExpectations(t)
-				case policyCPUSet:
-					cgroupCPUSetMock.AssertExpectations(t)
-				}
-			}
+			cgroupCPUSetMock.AssertExpectations(t)
+			cgroupCPUCFSMock.AssertExpectations(t)
 		})
 	}
 }
 
 func TestPolicyManagerRemovePod(t *testing.T) {
 	testCaseArray := []struct {
-		description  string
-		pod          *v1.Pod
-		expErrCPUCFS error
-		expErrCPUSet error
-		expErr       error
+		description           string
+		pod                   *v1.Pod
+		expErrCPUSetRemovePod error
+		expErrCPUSetUpdatePod error
+		expErrCPUCFSRemovePod error
+		expErrCPUCFSUpdatePod error
+		expErr                error
 	}{
+		// Not any Cgroup is reached
+		{
+			description: "Fail, pod not existed",
+			expErr:      fmt.Errorf("fake error"),
+		},
+		// For all pods, all host-global Cgroup are updated
+		{
+			description: "Success, policy=policyDefault",
+			pod:         testGeneratePodPolicy(policyDefault),
+		},
+		{
+			description:           "Fail, policy=policyDefault, error from cgroupCPUSet.RemovePod()",
+			pod:                   testGeneratePodPolicy(policyDefault),
+			expErrCPUSetRemovePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyDefault, error from cgroupCPUSet.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyDefault),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description:           "Fail, policy=policyDefault, error from cgroupCPUSet.RemovePod() and .UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyDefault),
+			expErrCPUSetRemovePod: fmt.Errorf("fake error"),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		{
+			description: "Success, policy=policyIsolated",
+			pod:         testGeneratePodPolicy(policyIsolated),
+		},
+		{
+			description:           "Fail, policy=policyIsolated, error from cgroupCPUSet.RemovePod()",
+			pod:                   testGeneratePodPolicy(policyIsolated),
+			expErrCPUSetRemovePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
+		},
+		// For some pods with specific policies, extra pod-local Cgroup are updated
 		{
 			description: "Success, policy=policyCPUCSF",
 			pod:         testGeneratePodPolicy(policyCPUCFS),
 		},
 		{
-			description: "Success, policy=policyCPUSet",
-			pod:         testGeneratePodPolicy(policyCPUSet),
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUSet.AddPod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetRemovePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 		{
-			description: "Fail, policy unknown",
-			pod:         testGeneratePodPolicy(policyUnknown),
-			expErr:      fmt.Errorf("fake error"),
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUSet.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 		{
-			description: "Fail, pod not existed",
-			expErr:      fmt.Errorf("fake error"),
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUCFS.AddPod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFSRemovePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 		{
-			description:  "Fail, policy=policyCPUCSF, error from cgroupCPUCFS.RemovePod()",
-			pod:          testGeneratePodPolicy(policyCPUCFS),
-			expErrCPUCFS: fmt.Errorf("fake error"),
-			expErr:       fmt.Errorf("fake error"),
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUCFS.UpdatePod()",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUCFSUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 		{
-			description:  "Fail, policy=policyCPUSet, error from cgroupCPUSet.RemovePod()",
-			pod:          testGeneratePodPolicy(policyCPUSet),
-			expErrCPUSet: fmt.Errorf("fake error"),
-			expErr:       fmt.Errorf("fake error"),
+			description:           "Fail, policy=policyCPUCFS, error from cgroupCPUCFS and cgroupCPUSet",
+			pod:                   testGeneratePodPolicy(policyCPUCFS),
+			expErrCPUSetRemovePod: fmt.Errorf("fake error"),
+			expErrCPUSetUpdatePod: fmt.Errorf("fake error"),
+			expErrCPUCFSRemovePod: fmt.Errorf("fake error"),
+			expErrCPUCFSUpdatePod: fmt.Errorf("fake error"),
+			expErr:                fmt.Errorf("fake error"),
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			cgroupCPUCFSMock := new(MockCgroup)
-			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUCFS {
-				cgroupCPUCFSMock.
-					On("RemovePod", tc.pod).
-					Return(tc.expErrCPUCFS).
-					Once()
-			}
 			cgroupCPUSetMock := new(MockCgroup)
-			if tc.pod != nil && tc.pod.Spec.Policy == policyCPUSet {
-				cgroupCPUSetMock.
-					On("RemovePod", tc.pod).
-					Return(tc.expErrCPUSet).
-					Once()
+			if tc.pod != nil {
+				cgroupCPUSetMock.On("RemovePod", tc.pod).
+					Return(tc.expErrCPUSetRemovePod).Once()
+				cgroupCPUSetMock.On("UpdatePod", tc.pod).
+					Return(tc.expErrCPUSetUpdatePod).Once()
+				cgroupCPUCFSMock.On("RemovePod", tc.pod).
+					Return(tc.expErrCPUCFSRemovePod).Once()
+				cgroupCPUCFSMock.On("UpdatePod", tc.pod).
+					Return(tc.expErrCPUCFSUpdatePod).Once()
 			}
 			pm := policyManagerImpl{
 				cgroupCPUCFS: cgroupCPUCFSMock,
@@ -332,14 +427,8 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			if tc.pod != nil {
-				switch tc.pod.Spec.Policy {
-				case policyCPUCFS:
-					cgroupCPUCFSMock.AssertExpectations(t)
-				case policyCPUSet:
-					cgroupCPUSetMock.AssertExpectations(t)
-				}
-			}
+			cgroupCPUSetMock.AssertExpectations(t)
+			cgroupCPUCFSMock.AssertExpectations(t)
 		})
 	}
 }

@@ -143,12 +143,17 @@ func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
 	ccs.podSet.Insert(podUID)
 
 	// Write cgroup values for this pod to host
-	// TODO(li) For now, when adding pod failed here, cgroupCPUSet is not changed.
-	// As a result,
-	// this pod is assumed to use the shared pool, no matter the pod.Spec.
-	// It happens in cased such as pod is too large or dedicated number is 0.
-	if err := ccs.addPodUpdate(pod); err != nil {
-		return err
+	policy := getPodPolicy(pod)
+	switch policy {
+	case policyDefault, policyCPUCFS:
+		klog.Infof("[policymanager] policy (%q) will use cpusShared pool",
+			policy)
+	case policyIsolated:
+		if err := ccs.addPodUpdate(pod); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("policy (%q) not supported", policy)
 	}
 
 	return nil
@@ -209,5 +214,9 @@ func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {
 
 	klog.Infof("[policymanager] cgroupCPUSet (%+v) after RemovePod", ccs)
 
+	return nil
+}
+
+func (ccs *cgroupCPUSet) UpdatePod(pod *v1.Pod) (rerr error) {
 	return nil
 }

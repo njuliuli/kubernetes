@@ -26,9 +26,9 @@ import (
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 )
 
-// Share const (SharesPerCPU, MilliCPUToCPU) in pkg/kubelet/cm/helper_linux.go
-// for units conversion
 const (
+	// Share const (SharesPerCPU, MilliCPUToCPU) in pkg/kubelet/cm/helper_linux.go
+	// for units conversion
 	// 2ms
 	cpuSharesMin = 2
 	// 100000 -> 100ms
@@ -161,9 +161,19 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) (rerr error) {
 	ccc.podSet.Insert(podUID)
 
 	// Write cgroup values for this pod to host
-	if err := ccc.addPodUpdate(pod); err != nil {
-		return err
+	policy := getPodPolicy(pod)
+	switch policy {
+	case policyCPUCFS:
+		if err := ccc.addPodUpdate(pod); err != nil {
+			return err
+		}
+	case policyDefault, policyIsolated:
+		klog.Infof("[policymanager] policy (%q), cgroupCPUCFS is not changed",
+			policy)
+	default:
+		return fmt.Errorf("policy (%q) not supported", policy)
 	}
+
 	cgroupConfig := ccc.readResourceConfig(pod)
 	if err := ccc.cgroupManager.Update(cgroupConfig); err != nil {
 		return err
@@ -286,5 +296,9 @@ func (ccc *cgroupCPUCFS) RemovePod(pod *v1.Pod) (rerr error) {
 
 	klog.Infof("[policymanager] cgroupCPUCFS (%+v) after RemovePod", ccc)
 
+	return nil
+}
+
+func (ccc *cgroupCPUCFS) UpdatePod(pod *v1.Pod) (rerr error) {
 	return nil
 }

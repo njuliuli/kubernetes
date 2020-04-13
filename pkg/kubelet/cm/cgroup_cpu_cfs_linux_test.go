@@ -150,7 +150,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			cccBefore: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString("1"),
 			}),
-			pod: testGeneratePodCPUCFS("1", "", ""),
+			pod: testGeneratePod(policyCPUCFS, "1", "", ""),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString("1"),
 			}),
@@ -161,9 +161,18 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
+			description: "Fail, mode for AddPod unknown",
+			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			pod:         testGeneratePod(policyUnknown, "1", "", ""),
+			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString("1"),
+			}),
+			expErr: fmt.Errorf("fake error"),
+		},
+		{
 			description: "Fail, error in calling CgroupManager.Update(...)",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", "", ""),
+			pod:         testGeneratePod(policyCPUCFS, "1", "", ""),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSharesMin},
@@ -180,7 +189,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 		{
 			description: "Success, request == limit",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", cpuSmall, cpuSmall),
+			pod:         testGeneratePod(policyCPUCFS, "1", cpuSmall, cpuSmall),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
@@ -199,7 +208,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 		{
 			description: "Success, request < limit",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", cpuSmall, cpuLarge),
+			pod:         testGeneratePod(policyCPUCFS, "1", cpuSmall, cpuLarge),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
@@ -218,7 +227,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 		{
 			description: "Success, request (empty), limit (not empty)",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", "", cpuLarge),
+			pod:         testGeneratePod(policyCPUCFS, "1", "", cpuLarge),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSharesMin},
@@ -237,7 +246,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 		{
 			description: "Success, request (not empty), limit (empty)",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", cpuSmall, ""),
+			pod:         testGeneratePod(policyCPUCFS, "1", cpuSmall, ""),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
@@ -252,7 +261,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 		{
 			description: "Success, request (empty) == limit (empty)",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", "", ""),
+			pod:         testGeneratePod(policyCPUCFS, "1", "", ""),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSharesMin},
@@ -281,7 +290,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 					"3": cpuPeriodDefault * 3,
 				},
 			},
-			pod: testGeneratePodCPUCFS("1", cpuSmall, cpuSmall),
+			pod: testGeneratePod(policyCPUCFS, "1", cpuSmall, cpuSmall),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString("1"),
 				podToCPUShares: map[string]uint64{
@@ -341,11 +350,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			if tc.expErr == nil {
-				cmMock.AssertExpectations(t)
-			} else if tc.expErrCgroupManager != nil {
-				cmMock.AssertExpectations(t)
-			}
+			cmMock.AssertExpectations(t)
 		})
 	}
 }

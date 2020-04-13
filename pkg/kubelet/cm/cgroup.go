@@ -24,10 +24,17 @@ import (
 type Cgroup interface {
 	// Start is called during PolicyManager initialization.
 	Start() error
-	// Add a new pod to State, only called by PolicyManager,
+	// AddPod add a new pod to Cgroup,
+	// only called by PolicyManager
 	// being idempotent
 	AddPod(pod *v1.Pod) error
-	// Remove an existing pod from policy manager, only called by PolicyManager
+	// RemovePod remove an existing pod from Cgroup,
+	// only called by PolicyManager
 	// being idempotent
 	RemovePod(pod *v1.Pod) error
+	// UpdatePod read cgroup values from pod states stored in Cgroup, then write to host.
+	// For some Cgroup, only this pod is updated; for some Cgroup, all pods are updated.
+	// only called by PolicyManager
+	// being idempotent
+	UpdatePod(pod *v1.Pod) error
 }
