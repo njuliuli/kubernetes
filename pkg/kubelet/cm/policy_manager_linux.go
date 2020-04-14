@@ -29,10 +29,10 @@ import (
 
 const (
 	// policy names for getPodPolicy(pod), e.g. v1.Pod.Spec.Policy, now supported
+	policyUnknown  = "unknown"
 	policyDefault  = ""
 	policyCPUCFS   = "policy-cpu-cfs"
 	policyIsolated = "policy-isolated"
-	policyUnknown  = "unknown"
 )
 
 // getPodPolicy return per-task policy,
@@ -45,6 +45,11 @@ type policyManagerImpl struct {
 	// Protect the entire PolicyManager, including any Cgroup.
 	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
 	mutex sync.Mutex
+
+	// Track all pods managed by PolicyManager, map[string(pod.UID)] -> pod.
+	// Now pod update is not allowed.
+	// TODO(li) We may use type sets.String instead.
+	uidToPod map[string]*v1.Pod
 
 	// Each Cgroup struct is used to manage pod level cgroup values for a purpose
 
@@ -77,6 +82,7 @@ func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	}
 
 	pm := &policyManagerImpl{
+		uidToPod:     make(map[string]*v1.Pod),
 		cgroupCPUCFS: cgroupCPUCFS,
 		cgroupCPUSet: cgroupCPUSet,
 	}
@@ -109,6 +115,13 @@ func (p *policyManagerImpl) AddPod(pod *v1.Pod) (rerr error) {
 	}
 	klog.Infof("[policymanager] add pod (%q), with policy (%q) and UID (%q)",
 		pod.Name, getPodPolicy(pod), pod.UID)
+
+	// A pod can only be added once, update is not supported for now
+	podUID := string(pod.UID)
+	if _, found := p.uidToPod[podUID]; found {
+		return fmt.Errorf("pod already added to PolicyManager")
+	}
+	p.uidToPod[podUID] = pod
 
 	// Write to some Cgroup according to per-task policy,
 	// then read the current cgroup values from them.
@@ -151,6 +164,13 @@ func (p *policyManagerImpl) RemovePod(pod *v1.Pod) (rerr error) {
 	}
 	klog.Infof("[policymanager] remove pod (%q) with UID (%q)",
 		pod.Name, pod.UID)
+
+	// A pod can only be added once, update is not supported for now
+	podUID := string(pod.UID)
+	if _, found := p.uidToPod[podUID]; !found {
+		return fmt.Errorf("pod not added to PolicyManager yet")
+	}
+	delete(p.uidToPod, podUID)
 
 	isFailed := false
 	// For pod-local Cgroup

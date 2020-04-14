@@ -34,6 +34,9 @@ import (
 // such as cpuset.cpus.
 type cgroupCPUSet struct {
 	// Track all pods added to cgroupCPUSet, set of pod.UID
+	// TODO(li) Decide whether to remove podSet, when implementing writing to host.
+	// It seems any pod that is not found in podToCPUS is considered the same,
+	// whether they are in or not in podSet.
 	podSet sets.String
 
 	// Contains details of node CPU topology.

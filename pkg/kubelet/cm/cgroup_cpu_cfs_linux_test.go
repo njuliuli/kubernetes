@@ -161,7 +161,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
-			description: "Fail, mode for AddPod unknown",
+			description: "Fail, policy unknown",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 			pod:         testGeneratePod(policyUnknown, "1", "", ""),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
