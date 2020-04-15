@@ -125,13 +125,13 @@ func NewCgroupCPUSet(cpuTopology *cputopology.CPUTopology,
 
 // TODO(li) To enable crash recovery of kubelet,
 // we need to move some initialization logic to Start()
-func (ccs *cgroupCPUSet) Start() (rerr error) {
+func (ccs *cgroupCPUSet) Start() error {
 	klog.Infof("[policymanager] Start cgroupCPUSet, %+v", ccs)
 
 	return nil
 }
 
-func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) (rerr error) {
+func (ccs *cgroupCPUSet) AddPod(pod *v1.Pod) error {
 	if pod == nil {
 		return fmt.Errorf("pod not exist")
 	}
@@ -176,7 +176,7 @@ func (ccs *cgroupCPUSet) getNumCPUS(pod *v1.Pod) (cpusRequest int) {
 }
 
 // Update all podToValue (map[string(pod.UID)] -> value) for this pod
-func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) (rerr error) {
+func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) error {
 	cpusPodNum := ccs.getNumCPUS(pod)
 	if cpusPodNum == 0 {
 		return fmt.Errorf("skip pod (%q) that need 0 dedicated CPUs", pod.Name)
@@ -196,16 +196,9 @@ func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) (rerr error) {
 	return nil
 }
 
-func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {
-	if pod == nil {
-		return fmt.Errorf("pod not exist")
-	}
-
-	klog.Infof("[policymanager] Remove pod (%q) from cgroupCPUSet", pod.Name)
-
-	podUID := string(pod.UID)
+func (ccs *cgroupCPUSet) RemovePod(podUID string) error {
 	if !ccs.podSet.Has(podUID) {
-		return fmt.Errorf("pod (%q) not added to cgroupCPUSet yet", pod.Name)
+		return fmt.Errorf("pod not added to cgroupCPUSet yet")
 	}
 	ccs.podSet.Delete(podUID)
 
@@ -220,6 +213,6 @@ func (ccs *cgroupCPUSet) RemovePod(pod *v1.Pod) (rerr error) {
 	return nil
 }
 
-func (ccs *cgroupCPUSet) UpdatePod(pod *v1.Pod) (rerr error) {
-	return nil
+func (ccs *cgroupCPUSet) ReadPod(podUID string) (*ResourceConfig, error) {
+	return &ResourceConfig{}, nil
 }

@@ -31,10 +31,10 @@ type Cgroup interface {
 	// RemovePod remove an existing pod from Cgroup,
 	// only called by PolicyManager
 	// being idempotent
-	RemovePod(pod *v1.Pod) error
-	// UpdatePod read cgroup values from pod states stored in Cgroup, then write to host.
-	// For some Cgroup, only this pod is updated; for some Cgroup, all pods are updated.
+	RemovePod(podUID string) error
+	// ReadPod read cgroup values from pod states stored in Cgroup,
+	// which is then used to write to host.
 	// only called by PolicyManager
 	// being idempotent
-	UpdatePod(pod *v1.Pod) error
+	ReadPod(podUID string) (*ResourceConfig, error)
 }

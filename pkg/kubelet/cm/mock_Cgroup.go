@@ -26,13 +26,36 @@ func (_m *MockCgroup) AddPod(pod *v1.Pod) error {
 	return r0
 }
 
-// RemovePod provides a mock function with given fields: pod
-func (_m *MockCgroup) RemovePod(pod *v1.Pod) error {
-	ret := _m.Called(pod)
+// ReadPod provides a mock function with given fields: podUID
+func (_m *MockCgroup) ReadPod(podUID string) (*ResourceConfig, error) {
+	ret := _m.Called(podUID)
+
+	var r0 *ResourceConfig
+	if rf, ok := ret.Get(0).(func(string) *ResourceConfig); ok {
+		r0 = rf(podUID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*ResourceConfig)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(podUID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// RemovePod provides a mock function with given fields: podUID
+func (_m *MockCgroup) RemovePod(podUID string) error {
+	ret := _m.Called(podUID)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.Pod) error); ok {
-		r0 = rf(pod)
+	if rf, ok := ret.Get(0).(func(string) error); ok {
+		r0 = rf(podUID)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -47,20 +70,6 @@ func (_m *MockCgroup) Start() error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func() error); ok {
 		r0 = rf()
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdatePod provides a mock function with given fields: pod
-func (_m *MockCgroup) UpdatePod(pod *v1.Pod) error {
-	ret := _m.Called(pod)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*v1.Pod) error); ok {
-		r0 = rf(pod)
 	} else {
 		r0 = ret.Error(0)
 	}

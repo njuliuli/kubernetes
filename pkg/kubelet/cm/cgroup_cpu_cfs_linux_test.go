@@ -25,11 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-// fake factory method used in testing
-func fakeNewPodContainerManager() PodContainerManager {
-	return new(MockPodContainerManager)
-}
-
 // testCgroupCPUCFS is used to generate cgroupCPUCFS using in test
 type testCgroupCPUCFS struct {
 	podSet         sets.String
@@ -91,20 +86,17 @@ func testGeneratePodCPUCFS(uid, cpuRequest, cpuLimit string) *v1.Pod {
 	return testGeneratePod(policyCPUCFS, uid, cpuRequest, cpuLimit)
 }
 
-func TestNewCgroupCPUCFS(t *testing.T) {
-	_, err := NewCgroupCPUCFS(new(MockCgroupManager),
-		fakeNewPodContainerManager)
+// Since NewCgroupCPUCFS(...) and CgroupCPUCFS.Start() are executed together in this order,
+// we test them together.
+func TestNewCgroupCPUCFSAndStart(t *testing.T) {
+	ccc, err := NewCgroupCPUCFS()
+	if err == nil {
+		err = ccc.Start()
+	}
 
-	assert.Nil(t, err, "Creating cgroupCPUCFS failed")
-}
-
-func TestCgroupCPUCFSStart(t *testing.T) {
-	ccc, _ := NewCgroupCPUCFS(new(MockCgroupManager),
-		fakeNewPodContainerManager)
-
-	err := ccc.Start()
-
-	assert.Nil(t, err, "Starting cgroupCPUCFS failed")
+	assert.Nil(t, err)
+	testEqualCgroupCPUCFS(t, testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+		ccc.(*cgroupCPUCFS))
 }
 
 // Now we only handle simple cases.
@@ -121,29 +113,25 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 	cpuSmallQuota := int64(10000)
 	cpuLarge := "200m"
 	cpuLargeQuota := int64(20000)
-	cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
-	cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
+	// cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
+	// cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
 
 	// Some fields are skipped for simplicity,
 	// such as pod and expErr, are default to Go's nil in check below
 	testCaseArray := []struct {
-		description         string
-		cccBefore           *cgroupCPUCFS
-		pod                 *v1.Pod
-		cccAfter            *cgroupCPUCFS
-		cgroupConfig        *CgroupConfig
-		expErrCgroupManager error
-		expErr              error
+		description string
+		cccBefore   *cgroupCPUCFS
+		pod         *v1.Pod
+		cccAfter    *cgroupCPUCFS
+		// cgroupConfig        *CgroupConfig
+		// expErrCgroupManager error
+		expErr error
 	}{
 		{
 			description: "Fail, pod not existed",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 			cccAfter:    testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			cgroupConfig: &CgroupConfig{
-				Name:               cgroupName,
-				ResourceParameters: &ResourceConfig{},
-			},
-			expErr: fmt.Errorf("fake error"),
+			expErr:      fmt.Errorf("fake error"),
 		},
 		{
 			description: "Fail, pod already added",
@@ -154,10 +142,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString("1"),
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name:               cgroupName,
-				ResourceParameters: &ResourceConfig{},
-			},
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
@@ -170,23 +154,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
-			description: "Fail, error in calling CgroupManager.Update(...)",
-			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePod(policyCPUCFS, "1", "", ""),
-			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
-				podSet:         sets.NewString("1"),
-				podToCPUShares: map[string]uint64{"1": cpuSharesMin},
-			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSharesMin),
-				},
-			},
-			expErrCgroupManager: fmt.Errorf("fake error"),
-			expErr:              fmt.Errorf("fake error"),
-		},
-		{
 			description: "Success, request == limit",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 			pod:         testGeneratePod(policyCPUCFS, "1", cpuSmall, cpuSmall),
@@ -196,14 +163,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				podToCPUQuota:  map[string]int64{"1": cpuSmallQuota},
 				podToCPUPeriod: map[string]uint64{"1": cpuPeriodDefault},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSmallShare),
-					CpuQuota:  testCopyInt64(cpuSmallQuota),
-					CpuPeriod: testCopyUint64(cpuPeriodDefault),
-				},
-			},
 		},
 		{
 			description: "Success, request < limit",
@@ -215,14 +174,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				podToCPUQuota:  map[string]int64{"1": cpuLargeQuota},
 				podToCPUPeriod: map[string]uint64{"1": cpuPeriodDefault},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSmallShare),
-					CpuQuota:  testCopyInt64(cpuLargeQuota),
-					CpuPeriod: testCopyUint64(cpuPeriodDefault),
-				},
-			},
 		},
 		{
 			description: "Success, request (empty), limit (not empty)",
@@ -234,14 +185,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				podToCPUQuota:  map[string]int64{"1": cpuLargeQuota},
 				podToCPUPeriod: map[string]uint64{"1": cpuPeriodDefault},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSharesMin),
-					CpuQuota:  testCopyInt64(cpuLargeQuota),
-					CpuPeriod: testCopyUint64(cpuPeriodDefault),
-				},
-			},
 		},
 		{
 			description: "Success, request (not empty), limit (empty)",
@@ -251,12 +194,6 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSmallShare},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSmallShare),
-				},
-			},
 		},
 		{
 			description: "Success, request (empty) == limit (empty)",
@@ -266,17 +203,11 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": cpuSharesMin},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSharesMin),
-				},
-			},
 		},
 		{
 			description: "Success, request == limit, with some existing pods",
 			cccBefore: &cgroupCPUCFS{
-				podSet: sets.NewString(),
+				podSet: sets.NewString("2", "3"),
 				podToCPUShares: map[string]uint64{
 					"2": cpuSmallShare * 2,
 					"3": cpuSmallShare * 3,
@@ -292,7 +223,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			},
 			pod: testGeneratePod(policyCPUCFS, "1", cpuSmall, cpuSmall),
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
-				podSet: sets.NewString("1"),
+				podSet: sets.NewString("1", "2", "3"),
 				podToCPUShares: map[string]uint64{
 					"1": cpuSmallShare,
 					"2": cpuSmallShare * 2,
@@ -309,38 +240,30 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 					"3": cpuPeriodDefault * 3,
 				},
 			}),
-			cgroupConfig: &CgroupConfig{
-				Name: cgroupName,
-				ResourceParameters: &ResourceConfig{
-					CpuShares: testCopyUint64(cpuSmallShare),
-					CpuQuota:  testCopyInt64(cpuSmallQuota),
-					CpuPeriod: testCopyUint64(cpuPeriodDefault),
-				},
-			},
 		},
 	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			ccc := tc.cccBefore
-			pcmMock := new(MockPodContainerManager)
-			pcmMock.On("GetPodContainerName", tc.pod).
-				Return(cgroupName, cgroupPath)
-			ccc.newPodContainerManager = func() PodContainerManager {
-				return pcmMock
-			}
-			cmMock := new(MockCgroupManager)
-			// Only check if CgroupManager.Update(...) is correctly called
-			if tc.expErr == nil {
-				cmMock.On("Update", tc.cgroupConfig).
-					Return(tc.expErrCgroupManager).
-					Once()
-			} else if tc.expErrCgroupManager != nil {
-				cmMock.On("Update", tc.cgroupConfig).
-					Return(tc.expErrCgroupManager).
-					Once()
-			}
-			ccc.cgroupManager = cmMock
+			// pcmMock := new(MockPodContainerManager)
+			// pcmMock.On("GetPodContainerName", tc.pod).
+			// 	Return(cgroupName, cgroupPath)
+			// ccc.newPodContainerManager = func() PodContainerManager {
+			// 	return pcmMock
+			// }
+			// cmMock := new(MockCgroupManager)
+			// // Only check if CgroupManager.Update(...) is correctly called
+			// if tc.expErr == nil {
+			// 	cmMock.On("Update", tc.cgroupConfig).
+			// 		Return(tc.expErrCgroupManager).
+			// 		Once()
+			// } else if tc.expErrCgroupManager != nil {
+			// 	cmMock.On("Update", tc.cgroupConfig).
+			// 		Return(tc.expErrCgroupManager).
+			// 		Once()
+			// }
+			// ccc.cgroupManager = cmMock
 
 			err := ccc.AddPod(tc.pod)
 
@@ -350,7 +273,7 @@ func TestCgroupCPUCFSAddPod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			cmMock.AssertExpectations(t)
+			// cmMock.AssertExpectations(t)
 		})
 	}
 }
@@ -359,7 +282,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 	testCaseArray := []struct {
 		description string
 		cccBefore   *cgroupCPUCFS
-		pod         *v1.Pod
+		podUID      string
 		cccAfter    *cgroupCPUCFS
 		expErr      error
 	}{
@@ -372,7 +295,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 		{
 			description: "Fail, pod not added yet",
 			cccBefore:   testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			pod:         testGeneratePodCPUCFS("1", "", ""),
+			podUID:      "1",
 			expErr:      fmt.Errorf("fake error"),
 			cccAfter:    testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
@@ -382,7 +305,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 				podSet:         sets.NewString("1"),
 				podToCPUShares: map[string]uint64{"1": 1},
 			}),
-			pod:      testGeneratePodCPUCFS("1", "", ""),
+			podUID:   "1",
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
 		{
@@ -393,13 +316,13 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 				podToCPUQuota:  map[string]int64{"1": 1},
 				podToCPUPeriod: map[string]uint64{"1": 1},
 			}),
-			pod:      testGeneratePodCPUCFS("1", "", ""),
+			podUID:   "1",
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
 		},
 		{
 			description: "Success, multiple existing pods",
 			cccBefore: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
-				podSet: sets.NewString("1"),
+				podSet: sets.NewString("1", "2", "3"),
 				podToCPUShares: map[string]uint64{
 					"1": 1,
 					"2": 2,
@@ -416,9 +339,9 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 					"3": 3,
 				},
 			}),
-			pod: testGeneratePodCPUCFS("1", "100m", "200m"),
+			podUID: "1",
 			cccAfter: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
-				podSet: sets.NewString(),
+				podSet: sets.NewString("2", "3"),
 				podToCPUShares: map[string]uint64{
 					"2": 2,
 					"3": 3,
@@ -439,7 +362,7 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 		t.Run(tc.description, func(t *testing.T) {
 			ccc := tc.cccBefore
 
-			err := ccc.RemovePod(tc.pod)
+			err := ccc.RemovePod(string(tc.podUID))
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
@@ -447,6 +370,136 @@ func TestCgroupCPUCFSRemovePod(t *testing.T) {
 				assert.Error(t, err)
 			}
 			testEqualCgroupCPUCFS(t, tc.cccAfter, ccc)
+		})
+	}
+}
+
+func TestCgroupCPUCFSReadPod(t *testing.T) {
+	type testCaseStruct struct {
+		description string
+		ccc         *cgroupCPUCFS
+		podUID      string
+		expRC       *ResourceConfig
+		expErr      error
+	}
+	var testCaseArray []testCaseStruct
+
+	// One existing pod
+	testCaseArray = append(testCaseArray, []testCaseStruct{
+		{
+			description: "Pod in 3 maps",
+			ccc: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": 11},
+				podToCPUQuota:  map[string]int64{"1": 12},
+				podToCPUPeriod: map[string]uint64{"1": 13},
+			}),
+			podUID: "1",
+			expRC: &ResourceConfig{
+				CpuShares: testCopyUint64(11),
+				CpuQuota:  testCopyInt64(12),
+				CpuPeriod: testCopyUint64(13),
+			},
+		},
+		{
+			description: "Pod in 2 maps",
+			ccc: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": 11},
+				podToCPUQuota:  map[string]int64{"1": 12},
+			}),
+			podUID: "1",
+			expRC: &ResourceConfig{
+				CpuShares: testCopyUint64(11),
+				CpuQuota:  testCopyInt64(12),
+			},
+		},
+		{
+			description: "Pod in 1 maps",
+			ccc: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet:         sets.NewString("1"),
+				podToCPUShares: map[string]uint64{"1": 11},
+			}),
+			podUID: "1",
+			expRC: &ResourceConfig{
+				CpuShares: testCopyUint64(11),
+			},
+		},
+		{
+			description: "Pod in 0 map",
+			ccc: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString("1"),
+			}),
+			podUID: "1",
+			expRC:  &ResourceConfig{},
+		},
+		{
+			description: "Pod not in podSet",
+			ccc:         testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			podUID:      "1",
+			expRC:       &ResourceConfig{},
+			expErr:      fmt.Errorf("fake error"),
+		},
+	}...)
+
+	// Multiple existing pods of different kinds
+	cccTest := testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+		podSet: sets.NewString("1", "2", "3"),
+		podToCPUShares: map[string]uint64{
+			"1": 11,
+			"2": 21,
+		},
+		podToCPUQuota: map[string]int64{
+			"1": 12,
+		},
+		podToCPUPeriod: map[string]uint64{
+			"1": 13,
+		},
+	})
+	testCaseArray = append(testCaseArray, []testCaseStruct{
+		{
+			description: "Multiple pods, target pod in 3 maps",
+			ccc:         cccTest,
+			podUID:      "1",
+			expRC: &ResourceConfig{
+				CpuShares: testCopyUint64(11),
+				CpuQuota:  testCopyInt64(12),
+				CpuPeriod: testCopyUint64(13),
+			},
+		},
+		{
+			description: "Multiple pods, target pod in 1 maps",
+			ccc:         cccTest,
+			podUID:      "2",
+			expRC: &ResourceConfig{
+				CpuShares: testCopyUint64(21),
+			},
+		},
+		{
+			description: "Multiple pods, target pod in 0 maps",
+			ccc:         cccTest,
+			podUID:      "3",
+			expRC:       &ResourceConfig{},
+		},
+		{
+			description: "Multiple pods, target pod not in podSet",
+			ccc:         cccTest,
+			podUID:      "4",
+			expRC:       &ResourceConfig{},
+			expErr:      fmt.Errorf("fake error"),
+		},
+	}...)
+
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			resourceConfig, err := tc.ccc.ReadPod(tc.podUID)
+
+			if tc.expErr == nil {
+				assert.Nil(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+			assert.Equal(t, tc.expRC, resourceConfig)
 		})
 	}
 }
