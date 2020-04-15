@@ -380,7 +380,8 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 		ccc         *cgroupCPUCFS
 		podUID      string
 		expRC       *ResourceConfig
-		expErr      error
+		// expErr      error
+		expIsTracked bool
 	}
 	var testCaseArray []testCaseStruct
 
@@ -400,6 +401,7 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 				CpuQuota:  testCopyInt64(12),
 				CpuPeriod: testCopyUint64(13),
 			},
+			expIsTracked: true,
 		},
 		{
 			description: "Pod in 2 maps",
@@ -413,6 +415,7 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 				CpuShares: testCopyUint64(11),
 				CpuQuota:  testCopyInt64(12),
 			},
+			expIsTracked: true,
 		},
 		{
 			description: "Pod in 1 maps",
@@ -424,21 +427,23 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 			expRC: &ResourceConfig{
 				CpuShares: testCopyUint64(11),
 			},
+			expIsTracked: true,
 		},
 		{
 			description: "Pod in 0 map",
 			ccc: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
 				podSet: sets.NewString("1"),
 			}),
-			podUID: "1",
-			expRC:  &ResourceConfig{},
+			podUID:       "1",
+			expRC:        &ResourceConfig{},
+			expIsTracked: true,
 		},
 		{
-			description: "Pod not in podSet",
-			ccc:         testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
-			podUID:      "1",
-			expRC:       &ResourceConfig{},
-			expErr:      fmt.Errorf("fake error"),
+			description:  "Pod not in podSet",
+			ccc:          testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			podUID:       "1",
+			expRC:        &ResourceConfig{},
+			expIsTracked: false,
 		},
 	}...)
 
@@ -466,6 +471,7 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 				CpuQuota:  testCopyInt64(12),
 				CpuPeriod: testCopyUint64(13),
 			},
+			expIsTracked: true,
 		},
 		{
 			description: "Multiple pods, target pod in 1 maps",
@@ -474,31 +480,29 @@ func TestCgroupCPUCFSReadPod(t *testing.T) {
 			expRC: &ResourceConfig{
 				CpuShares: testCopyUint64(21),
 			},
+			expIsTracked: true,
 		},
 		{
-			description: "Multiple pods, target pod in 0 maps",
-			ccc:         cccTest,
-			podUID:      "3",
-			expRC:       &ResourceConfig{},
+			description:  "Multiple pods, target pod in 0 maps",
+			ccc:          cccTest,
+			podUID:       "3",
+			expRC:        &ResourceConfig{},
+			expIsTracked: true,
 		},
 		{
-			description: "Multiple pods, target pod not in podSet",
-			ccc:         cccTest,
-			podUID:      "4",
-			expRC:       &ResourceConfig{},
-			expErr:      fmt.Errorf("fake error"),
+			description:  "Multiple pods, target pod not in podSet",
+			ccc:          cccTest,
+			podUID:       "4",
+			expRC:        &ResourceConfig{},
+			expIsTracked: false,
 		},
 	}...)
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
-			resourceConfig, err := tc.ccc.ReadPod(tc.podUID)
+			resourceConfig, isTracked := tc.ccc.ReadPod(tc.podUID)
 
-			if tc.expErr == nil {
-				assert.Nil(t, err)
-			} else {
-				assert.Error(t, err)
-			}
+			assert.Equal(t, tc.expIsTracked, isTracked)
 			assert.Equal(t, tc.expRC, resourceConfig)
 		})
 	}

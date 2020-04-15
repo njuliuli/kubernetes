@@ -213,6 +213,6 @@ func (ccs *cgroupCPUSet) RemovePod(podUID string) error {
 	return nil
 }
 
-func (ccs *cgroupCPUSet) ReadPod(podUID string) (*ResourceConfig, error) {
-	return &ResourceConfig{}, nil
+func (ccs *cgroupCPUSet) ReadPod(podUID string) (*ResourceConfig, bool) {
+	return &ResourceConfig{}, true
 }

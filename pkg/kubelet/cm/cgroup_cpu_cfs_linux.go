@@ -162,11 +162,6 @@ func (ccc *cgroupCPUCFS) AddPod(pod *v1.Pod) error {
 		return fmt.Errorf("policy (%q) not supported", policy)
 	}
 
-	// cgroupConfig := ccc.readResourceConfig(pod)
-	// if err := ccc.cgroupManager.Update(cgroupConfig); err != nil {
-	// 	return err
-	// }
-
 	return nil
 }
 
@@ -226,34 +221,6 @@ func (ccc *cgroupCPUCFS) addPodUpdate(pod *v1.Pod) error {
 	return nil
 }
 
-// // Get CgroupConfig for this pod from stored cgroup values
-// func (ccc *cgroupCPUCFS) readResourceConfig(pod *v1.Pod) *CgroupConfig {
-// 	// Read cgroup values
-// 	podUID := string(pod.UID)
-// 	rc := &ResourceConfig{}
-// 	if cpuShares, found := ccc.podToCPUShares[podUID]; found {
-// 		rc.CpuShares = &cpuShares
-// 	}
-// 	if cpuPeriod, found := ccc.podToCPUPeriod[podUID]; found {
-// 		rc.CpuPeriod = &cpuPeriod
-// 	}
-// 	if cpuQuota, found := ccc.podToCPUQuota[podUID]; found {
-// 		rc.CpuQuota = &cpuQuota
-// 	}
-
-// 	// Get cgroup path to this pod
-// 	pcm := ccc.newPodContainerManager()
-// 	cgroupName, cgroupPath := pcm.GetPodContainerName(pod)
-
-// 	klog.Infof("[policymanager] For pod (%q), cgroupPath (%q) and ResourceParameters (%+v)",
-// 		pod.Name, cgroupPath, rc)
-
-// 	return &CgroupConfig{
-// 		Name:               cgroupName,
-// 		ResourceParameters: rc,
-// 	}
-// }
-
 func (ccc *cgroupCPUCFS) RemovePod(podUID string) error {
 	if !ccc.podSet.Has(podUID) {
 		return fmt.Errorf("pod not added to cgroupCPUCFS yet")
@@ -276,16 +243,18 @@ func (ccc *cgroupCPUCFS) RemovePod(podUID string) error {
 	return nil
 }
 
-func (ccc *cgroupCPUCFS) ReadPod(podUID string) (*ResourceConfig, error) {
+func (ccc *cgroupCPUCFS) ReadPod(podUID string) (rc *ResourceConfig, isTracked bool) {
 	// TODO(li) Do we need to update cgroup values here, before deleting cgroup path?
 	// Maybe set cpu.shares for this pod to cpuSharesMin here?
 	// Now I think it is not necessary.
-	rc := &ResourceConfig{}
+	rc = &ResourceConfig{}
 
+	// When the pod is just removed
 	if !ccc.podSet.Has(podUID) {
-		return rc, fmt.Errorf("pod not added to cgroupCPUCFS yet")
+		return rc, false
 	}
 
+	// When the pod is just added
 	if cpuShares, found := ccc.podToCPUShares[podUID]; found {
 		rc.CpuShares = &cpuShares
 	}
@@ -296,5 +265,5 @@ func (ccc *cgroupCPUCFS) ReadPod(podUID string) (*ResourceConfig, error) {
 		rc.CpuQuota = &cpuQuota
 	}
 
-	return rc, nil
+	return rc, true
 }
