@@ -376,6 +376,9 @@ func (m *cgroupManagerImpl) toResources(resourceConfig *ResourceConfig) *libcont
 	if resourceConfig.CpuPeriod != nil {
 		resources.CpuPeriod = *resourceConfig.CpuPeriod
 	}
+	if resourceConfig.CpusetCpus != nil {
+		resources.CpusetCpus = *resourceConfig.CpusetCpus
+	}
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.SupportPodPidsLimit) || utilfeature.DefaultFeatureGate.Enabled(kubefeatures.SupportNodePidsLimit) {
 		if resourceConfig.PidsLimit != nil {
 			resources.PidsLimit = *resourceConfig.PidsLimit

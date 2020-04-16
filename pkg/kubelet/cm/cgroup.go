@@ -34,8 +34,10 @@ type Cgroup interface {
 	RemovePod(podUID string) error
 	// ReadPod read cgroup values from pod states stored in Cgroup,
 	// which is then used to write to host.
-	// Even the given pod is not already added (isTracked), a default rc is returned.
+	// Even the given pod is not already added (isTracked),
+	// or pod == nil (should never happen),
+	// a default rc is returned.
 	// only called by PolicyManager
 	// being idempotent
-	ReadPod(podUID string) (rc *ResourceConfig, isTracked bool)
+	ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked bool)
 }

@@ -21,6 +21,7 @@ import (
 	"math"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
@@ -185,7 +186,8 @@ func (ccs *cgroupCPUSet) addPodUpdate(pod *v1.Pod) error {
 	cpusPod, err := ccs.takeByTopologyFunc(ccs.cpuTopology, ccs.cpusShared,
 		cpusPodNum)
 	if err != nil {
-		return err
+		return fmt.Errorf("skip pod (%q) that fails takeByTopologyFunc with error %v",
+			pod.Name, err)
 	}
 
 	ccs.podToCPUS[string(pod.UID)] = cpusPod
@@ -213,6 +215,60 @@ func (ccs *cgroupCPUSet) RemovePod(podUID string) error {
 	return nil
 }
 
-func (ccs *cgroupCPUSet) ReadPod(podUID string) (*ResourceConfig, bool) {
-	return &ResourceConfig{}, true
+func (ccs *cgroupCPUSet) ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked bool) {
+	cpus := ccs.cpusShared.String()
+	rcDefault := &ResourceConfig{CpusetCpus: &cpus}
+
+	if pod == nil {
+		klog.Infof("[policymanager] ReadPod, pod not exist, should never happen!")
+		return rcDefault, false
+	}
+	podUID := string(pod.UID)
+
+	// When the pod is just removed
+	if !ccs.podSet.Has(podUID) {
+		isTracked = false
+	} else {
+		// When the pod is just added
+		isTracked = true
+	}
+
+	// var cpus string
+	if cpusPod, found := ccs.podToCPUS[podUID]; found {
+		klog.Infof("[policymanager] Pod belong to cpusDedicated pool.")
+		cpus = cpusPod.String()
+	} else if ccs.isSystemPod(pod) {
+		klog.Infof("[policymanager] Pod belongs to cpusReserved pool.")
+		cpus = ccs.cpusReserved.String()
+	} else {
+		klog.Infof("[policymanager] Pod belongs to cpusShared pool.")
+		cpus = ccs.cpusShared.String()
+	}
+
+	return &ResourceConfig{CpusetCpus: &cpus}, isTracked
+
+}
+
+// check if this pod belong to cpusReserved pool
+func (ccs *cgroupCPUSet) isSystemPod(pod *v1.Pod) bool {
+	// Should never happen
+	if pod == nil {
+		klog.Infof("[policymanager] isSystemPod, pod not exist, should never happen!")
+		return true
+	}
+
+	switch pod.Namespace {
+	case metav1.NamespaceSystem, metav1.NamespacePublic:
+		return true
+	case metav1.NamespaceNone:
+		klog.Infof("[policymanager] isSystemPod, unexpected namesapce (%q)",
+			pod.Namespace)
+		return true
+	case metav1.NamespaceDefault:
+		return false
+	default:
+		klog.Infof("[policymanager] isSystemPod, user-defined namesapce (%q)",
+			pod.Namespace)
+		return false
+	}
 }

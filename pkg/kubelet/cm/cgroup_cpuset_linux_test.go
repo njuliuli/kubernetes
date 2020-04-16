@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
@@ -70,11 +72,24 @@ var (
 	testCPUSReserved = cpuset.NewCPUSet(0, 2, 12, 14)
 	testCPUSShared   = testTopologyDualSocketHT.CPUDetails.CPUs().
 				Difference(testCPUSReserved)
+
+	namespaceUserDefined = "namespace-user-defined"
 )
 
 // Generate pod with given fields set, with pod.Policy=policyCFS
-func testGeneratePodCPUSet(uid, cpuRequest, cpuLimit string) *v1.Pod {
-	return testGeneratePod(policyIsolated, uid, cpuRequest, cpuLimit)
+func testGeneratePodUIDAndNamespace(uid, namespace string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       types.UID(uid),
+			Namespace: namespace,
+		},
+	}
+}
+
+// Make a copy of string and return pointer to it.
+// This is needed to fill ResourceConfig with fields' default value being nil.
+func testCopyString(value string) *string {
+	return &value
 }
 
 // testCgroupCPUSet is used to generate cgroupCPUSet using in test
@@ -251,7 +266,7 @@ func TestCgroupCPUSetAddPod(t *testing.T) {
 			ccsBefore: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
 			}),
-			pod: testGeneratePodCPUSet("1", "", ""),
+			pod: testGeneratePod(policyIsolated, "1", "", ""),
 			ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
 				podSet: sets.NewString("1"),
 			}),
@@ -483,6 +498,107 @@ func TestCgroupCPUSetRemovePod(t *testing.T) {
 				assert.Error(t, err)
 			}
 			testEqualCgroupCPUSet(t, tc.ccsAfter, ccs)
+		})
+	}
+}
+
+func TestCgroupCPUSetReadPod(t *testing.T) {
+	type testCaseStruct struct {
+		description  string
+		ccs          *cgroupCPUSet
+		pod          *v1.Pod
+		expRC        *ResourceConfig
+		expIsTracked bool
+	}
+	var testCaseArray []testCaseStruct
+
+	// Simple setup with both isolated and common pods
+	ccsFake := testGenerateCgroupCPUSet(&testCgroupCPUSet{
+		podSet: sets.NewString("1", "2"),
+		cpusShared: testCPUSShared.
+			Difference(cpuset.NewCPUSet(1)),
+		podToCPUS: map[string]cpuset.CPUSet{
+			"1": cpuset.NewCPUSet(1),
+		},
+	})
+	cpusDedicatedFake := cpuset.NewCPUSet(1).String()
+	cpusReservedFake := ccsFake.cpusReserved.String()
+	cpusSharedFake := ccsFake.cpusShared.String()
+
+	// For pod using cpusDedicated pool, it cannot be from system namespace
+	namespaceArray := []string{metav1.NamespaceDefault, namespaceUserDefined}
+	for _, namespace := range namespaceArray {
+		testCaseArray = append(testCaseArray, []testCaseStruct{
+			{
+				description: "Pod in cpusDedicated pool",
+				ccs:         ccsFake,
+				pod:         testGeneratePodUIDAndNamespace("1", namespace),
+				expRC: &ResourceConfig{
+					CpusetCpus: &cpusDedicatedFake,
+				},
+				expIsTracked: true,
+			},
+		}...)
+	}
+
+	// For pod using cpusReserved pool, it must be in system namespace
+	namespaceArray = []string{metav1.NamespaceSystem, metav1.NamespacePublic}
+	for _, namespace := range namespaceArray {
+		testCaseArray = append(testCaseArray, []testCaseStruct{
+			{
+				description: "Pod in cpusReserved pool",
+				ccs:         ccsFake,
+				pod:         testGeneratePodUIDAndNamespace("2", namespace),
+				expRC: &ResourceConfig{
+					CpusetCpus: &cpusReservedFake,
+				},
+				expIsTracked: true,
+			},
+		}...)
+	}
+
+	// For pods using cpusShared pool, it must be in user namespace
+	namespaceArray = []string{metav1.NamespaceDefault, namespaceUserDefined}
+	for _, namespace := range namespaceArray {
+		testCaseArray = append(testCaseArray, []testCaseStruct{
+			{
+				description: "Pod in cpusShared pool, after adding to Cgroup",
+				ccs:         ccsFake,
+				pod:         testGeneratePodUIDAndNamespace("2", namespace),
+				expRC: &ResourceConfig{
+					CpusetCpus: &cpusSharedFake,
+				},
+				expIsTracked: true,
+			},
+			{
+				description: "Pod in cpusShared pool, after removing from Cgroup",
+				ccs:         ccsFake,
+				pod:         testGeneratePodUIDAndNamespace("3", namespace),
+				expRC: &ResourceConfig{
+					CpusetCpus: &cpusSharedFake,
+				},
+				expIsTracked: false,
+			},
+		}...)
+	}
+
+	testCaseArray = append(testCaseArray, []testCaseStruct{
+		{
+			description: "Pod = nil, should never happen",
+			ccs:         ccsFake,
+			expRC: &ResourceConfig{
+				CpusetCpus: &cpusSharedFake,
+			},
+			expIsTracked: false,
+		},
+	}...)
+
+	for _, tc := range testCaseArray {
+		t.Run(tc.description, func(t *testing.T) {
+			resourceConfig, isTracked := tc.ccs.ReadPod(tc.pod)
+
+			assert.Equal(t, tc.expIsTracked, isTracked)
+			assert.Equal(t, tc.expRC, resourceConfig)
 		})
 	}
 }

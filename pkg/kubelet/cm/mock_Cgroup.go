@@ -26,13 +26,13 @@ func (_m *MockCgroup) AddPod(pod *v1.Pod) error {
 	return r0
 }
 
-// ReadPod provides a mock function with given fields: podUID
-func (_m *MockCgroup) ReadPod(podUID string) (*ResourceConfig, bool) {
-	ret := _m.Called(podUID)
+// ReadPod provides a mock function with given fields: pod
+func (_m *MockCgroup) ReadPod(pod *v1.Pod) (*ResourceConfig, bool) {
+	ret := _m.Called(pod)
 
 	var r0 *ResourceConfig
-	if rf, ok := ret.Get(0).(func(string) *ResourceConfig); ok {
-		r0 = rf(podUID)
+	if rf, ok := ret.Get(0).(func(*v1.Pod) *ResourceConfig); ok {
+		r0 = rf(pod)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*ResourceConfig)
@@ -40,8 +40,8 @@ func (_m *MockCgroup) ReadPod(podUID string) (*ResourceConfig, bool) {
 	}
 
 	var r1 bool
-	if rf, ok := ret.Get(1).(func(string) bool); ok {
-		r1 = rf(podUID)
+	if rf, ok := ret.Get(1).(func(*v1.Pod) bool); ok {
+		r1 = rf(pod)
 	} else {
 		r1 = ret.Get(1).(bool)
 	}

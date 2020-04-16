@@ -63,6 +63,8 @@ type policyManagerImpl struct {
 	// Host-global, for cpuset related cgroup values
 	cgroupCPUSet Cgroup
 
+	// // activePodsFunc is a method for listing active pods on the node
+	// activePodsFunc ActivePodsFunc
 	// Interface for cgroup management
 	cgroupManager CgroupManager
 	// newPodContainerManager is a factory method returns PodContainerManager,
@@ -76,6 +78,7 @@ var _ PolicyManager = &policyManagerImpl{}
 // NewPolicyManager creates PolicyManager for pod level cgroup values
 func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	newCgroupCPUSet typeNewCgroupCPUSet,
+	// activePodsFunc ActivePodsFunc,
 	cgroupManager CgroupManager,
 	newPodContainerManager typeNewPodContainerManager,
 	cpuTopology *cputopology.CPUTopology,
@@ -94,9 +97,10 @@ func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	}
 
 	pm := &policyManagerImpl{
-		uidToPod:               make(map[string]*v1.Pod),
-		cgroupCPUCFS:           cgroupCPUCFS,
-		cgroupCPUSet:           cgroupCPUSet,
+		uidToPod:     make(map[string]*v1.Pod),
+		cgroupCPUCFS: cgroupCPUCFS,
+		cgroupCPUSet: cgroupCPUSet,
+		// activePodsFunc:         activePodsFunc,
 		cgroupManager:          cgroupManager,
 		newPodContainerManager: newPodContainerManager,
 	}
@@ -147,7 +151,7 @@ func (pm *policyManagerImpl) AddPod(pod *v1.Pod) error {
 		return fmt.Errorf("policy (%q) is not supported", getPodPolicy(pod))
 	}
 
-	if err := pm.updateToHost(podUID, true); err != nil {
+	if err := pm.updateToHost(pod, true); err != nil {
 		klog.Infof("[policymanager] AddPod fails with error\n %v", err)
 		isFailed = true
 	}
@@ -187,11 +191,11 @@ func (pm *policyManagerImpl) addPodAllCgroup(pod *v1.Pod) error {
 // for CPUCFS, mode is unknown.
 // But in those cases, the failed pod is tracked,
 // and default value will be returned in the next writeHost step.
-func (pm *policyManagerImpl) updateToHost(podUID string, isAdded bool) error {
+func (pm *policyManagerImpl) updateToHost(pod *v1.Pod, isAdded bool) error {
 	resourceConfig := &ResourceConfig{}
 
 	isFailed := false
-	rc, isTracked := pm.cgroupCPUCFS.ReadPod(podUID)
+	rc, isTracked := pm.cgroupCPUCFS.ReadPod(pod)
 	if isTracked != isAdded {
 		klog.Infof("[policymanager] cgroupCPUCFS, pod isAdded (%v) but isTracked (%v)",
 			isAdded, isTracked)
@@ -203,22 +207,23 @@ func (pm *policyManagerImpl) updateToHost(podUID string, isAdded bool) error {
 		isFailed = true
 	}
 
-	// // Get cgroup path to this pod
-	// pcm := p.newPodContainerManager()
-	// cgroupName, cgroupPath := pcm.GetPodContainerName(pod)
+	// // Write cgroup values of all pods to host
+	// for _, pod := range pm.activePodsFunc() {
+	// 	// Get cgroup path to this pod
+	// 	pcm := pm.newPodContainerManager()
+	// 	cgroupName, cgroupPath := pcm.GetPodContainerName(pod)
 
-	// klog.Infof("[policymanager] For pod (%q), cgroupPath (%q) and ResourceParameters (%+v)",
-	// 	pod.Name, cgroupPath, rc)
+	// 	klog.Infof("[policymanager] For pod (%q), cgroupPath (%q) and ResourceParameters (%+v)",
+	// 		pod.Name, cgroupPath, rc)
 
-	// return &CgroupConfig{
-	// 	Name:               cgroupName,
-	// 	ResourceParameters: rc,
-	// }
+	// 	cgroupConfig := &CgroupConfig{
+	// 		Name:               cgroupName,
+	// 		ResourceParameters: rc,
+	// 	}
 
-	// // Write cgroup values to host
-	// cgroupConfig := ccc.readResourceConfig(pod)
-	// if err := ccc.cgroupManager.Update(cgroupConfig); err != nil {
-	// 	return err
+	// 	if err := pm.cgroupManager.Update(cgroupConfig); err != nil {
+	// 		return err
+	// 	}
 	// }
 
 	if isFailed {
@@ -255,7 +260,7 @@ func (pm *policyManagerImpl) RemovePod(pod *v1.Pod) error {
 		return fmt.Errorf("policy (%q) is not supported", getPodPolicy(pod))
 	}
 
-	if err := pm.updateToHost(podUID, false); err != nil {
+	if err := pm.updateToHost(pod, false); err != nil {
 		klog.Infof("[policymanager] RemovePod fails with error\n %v", err)
 		isFailed = true
 	}

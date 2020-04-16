@@ -243,18 +243,25 @@ func (ccc *cgroupCPUCFS) RemovePod(podUID string) error {
 	return nil
 }
 
-func (ccc *cgroupCPUCFS) ReadPod(podUID string) (rc *ResourceConfig, isTracked bool) {
+func (ccc *cgroupCPUCFS) ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked bool) {
+	// When the pod is just removed
 	// TODO(li) Do we need to update cgroup values here, before deleting cgroup path?
 	// Maybe set cpu.shares for this pod to cpuSharesMin here?
 	// Now I think it is not necessary.
-	rc = &ResourceConfig{}
+	rcDefault := &ResourceConfig{}
 
-	// When the pod is just removed
+	if pod == nil {
+		klog.Infof("[policymanager] ReadPod, pod not exist, should never happen!")
+		return rcDefault, false
+	}
+	podUID := string(pod.UID)
+
 	if !ccc.podSet.Has(podUID) {
-		return rc, false
+		return rcDefault, false
 	}
 
 	// When the pod is just added
+	rc = &ResourceConfig{}
 	if cpuShares, found := ccc.podToCPUShares[podUID]; found {
 		rc.CpuShares = &cpuShares
 	}

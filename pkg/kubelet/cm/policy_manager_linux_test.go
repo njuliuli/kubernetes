@@ -673,11 +673,13 @@ func TestPolicyManagerUpdateToHost(t *testing.T) {
 	type testCaseStruct struct {
 		description string
 		pm          *policyManagerImpl
-		podUID      string
+		pod         *v1.Pod
 		isAdded     bool
 		rcCCC       *ResourceConfig
 		isTracked   bool
-		expErr      error
+		// cgroupConfig        *CgroupConfig
+		// expErrCgroupManager error
+		expErr error
 	}
 	var testCaseArray []testCaseStruct
 
@@ -696,9 +698,9 @@ func TestPolicyManagerUpdateToHost(t *testing.T) {
 	// the value is also different depend on whether the pod isAdded
 	isAddedArray := []bool{true, false}
 	isTrackedArray := []bool{true, false}
-	podUIDArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
+	podArray := []*v1.Pod{testPodPolicyDefault, testPodPolicyCPUCFS, testPodPolicyIsolated}
 	rcCCCArray := []*ResourceConfig{testRCCCCPolicyDefault, testRCCCCPolicyCPUCFS, testRCCCCPolicyIsolated}
-	for i, podUID := range podUIDArray {
+	for i, pod := range podArray {
 		for _, isAdded := range isAddedArray {
 			for _, isTracked := range isTrackedArray {
 				rcCCC := rcCCCArray[i]
@@ -715,7 +717,7 @@ func TestPolicyManagerUpdateToHost(t *testing.T) {
 						description: fmt.Sprintf("Complete with error (%v), for isAdded (%v), isTracked (%v)",
 							expErr, isTracked, isAdded),
 						pm:        pmFake,
-						podUID:    podUID,
+						pod:       pod,
 						isAdded:   isAdded,
 						rcCCC:     rcCCC,
 						isTracked: isTracked,
@@ -726,14 +728,64 @@ func TestPolicyManagerUpdateToHost(t *testing.T) {
 		}
 	}
 
+	// // No existing pod in cgroupCPUSet
+	// cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
+	// cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
+
+	// testCaseArray = append(testCaseArray, []testCaseStruct{
+	// 	{
+	// 		description: "Fail, error in calling CgroupManager.Update(...)",
+	// 		ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+	// 		pod:         testGeneratePod(policyIsolated, "1", "1", "1"),
+	// 		ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+	// 			podSet: sets.NewString("1"),
+	// 			cpusShared: testCPUSShared.
+	// 				Difference(cpuset.NewCPUSet(1)),
+	// 			podToCPUS: map[string]cpuset.CPUSet{
+	// 				"1": cpuset.NewCPUSet(1),
+	// 			},
+	// 		}),
+	// 		cgroupConfig: &CgroupConfig{
+	// 			Name: cgroupName,
+	// 			ResourceParameters: &ResourceConfig{
+	// 				CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+	// 			},
+	// 		},
+	// 		expErrCgroupManager: fmt.Errorf("fake error"),
+	// 		expErr:              fmt.Errorf("fake error"),
+	// 	},
+	// }...)
+
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			pm := tc.pm
 			cccMock := pm.cgroupCPUCFS.(*MockCgroup)
-			cccMock.On("ReadPod", tc.podUID).
+			cccMock.On("ReadPod", tc.pod).
 				Return(tc.rcCCC, tc.isTracked).Once()
 
-			err := pm.updateToHost(tc.podUID, tc.isAdded)
+			// pcmMock := new(MockPodContainerManager)
+			// pcmMock.On("GetPodContainerName", tc.pod).
+			// 	Return(cgroupName, cgroupPath)
+			// ccs.newPodContainerManager = func() PodContainerManager {
+			// 	return pcmMock
+			// }
+			// cmMock := new(MockCgroupManager)
+			// // CgroupManager.Update(...) is only called at the last step
+			// if tc.expErr == nil {
+			// 	cmMock.On("Update", tc.cgroupConfig).
+			// 		Return(tc.expErrCgroupManager).
+			// 		Once()
+			// } else if tc.expErrCgroupManager != nil {
+			// 	cmMock.On("Update", tc.cgroupConfig).
+			// 		Return(tc.expErrCgroupManager).
+			// 		Once()
+			// }
+			// ccs.cgroupManager = cmMock
+			// ccs.activePodsFunc = func() []*v1.Pod {
+			// 	return []*v1.Pod{tc.pod}
+			// }
+
+			err := pm.updateToHost(tc.pod, tc.isAdded)
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
@@ -741,6 +793,7 @@ func TestPolicyManagerUpdateToHost(t *testing.T) {
 				assert.Error(t, err)
 			}
 			cccMock.AssertExpectations(t)
+			// cmMock.AssertExpectations(t)
 		})
 	}
 }
