@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/imdario/mergo"
 	"github.com/stretchr/testify/assert"
 
 	v1 "k8s.io/api/core/v1"
@@ -32,37 +33,18 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
-var (
-	// TODO(li) there are not const pointer in Go,
-	// how to make sure the values at those pointers are not modified during the test?
-	testUIDPolicyDefault = "2"
-	testPodPolicyDefault = testGeneratePod(policyDefault,
-		testUIDPolicyDefault, "", "")
-	testRCCCCPolicyDefault = &ResourceConfig{}
-
-	testUIDPolicyCPUCFS = "3"
-	testPodPolicyCPUCFS = testGeneratePod(policyCPUCFS,
-		testUIDPolicyCPUCFS, "", "")
-	testRCCCCPolicyCPUCFS = &ResourceConfig{
-		CpuShares: testCopyUint64(1),
-		CpuQuota:  testCopyInt64(2),
-		CpuPeriod: testCopyUint64(3),
-	}
-
-	testUIDPolicyIsolated = "4"
-	testPodPolicyIsolated = testGeneratePod(policyIsolated,
-		testUIDPolicyIsolated, "", "")
-	testRCCCCPolicyIsolated = &ResourceConfig{}
-
-	// For unknown policy
-	testUIDPolicyUnknown = "1"
-	testPodPolicyUnknown = testGeneratePod(policyUnknown,
-		testUIDPolicyUnknown, "", "")
-	// For pod after being removed from Cgroup
-	testRCCCCNotTracked = testRCCCCPolicyDefault
-)
-
 // Generate pod with given fields set
+func testGeneratePodUIDAndPolicy(uid, policy string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: types.UID(uid),
+		},
+		Spec: v1.PodSpec{
+			Policy: policy,
+		},
+	}
+}
+
 func testGeneratePod(policy, uid, cpuRequest, cpuLimit string) *v1.Pod {
 	rr := v1.ResourceRequirements{}
 	if cpuRequest != "" {
@@ -93,17 +75,19 @@ func testGeneratePod(policy, uid, cpuRequest, cpuLimit string) *v1.Pod {
 
 // testCgroupCPUSet is used to generate policyManagerImpl using in test
 type testPolicyManagerImpl struct {
-	uidToPod     map[string]*v1.Pod
-	cgroupCPUCFS Cgroup
-	cgroupCPUSet Cgroup
+	uidToPod      map[string]*v1.Pod
+	cgroupCPUCFS  Cgroup
+	cgroupCPUSet  Cgroup
+	cgroupManager CgroupManager
 }
 
 // Generate default policyManagerImpl, with customized default values after initialization
 func testGeneratePolicyManagerImpl(tpm *testPolicyManagerImpl) *policyManagerImpl {
 	pm := &policyManagerImpl{
-		uidToPod:     make(map[string]*v1.Pod),
-		cgroupCPUCFS: new(MockCgroup),
-		cgroupCPUSet: new(MockCgroup),
+		uidToPod:      make(map[string]*v1.Pod),
+		cgroupCPUCFS:  new(MockCgroup),
+		cgroupCPUSet:  new(MockCgroup),
+		cgroupManager: new(MockCgroupManager),
 	}
 
 	// If not set, some fields are set to customized default value
@@ -117,8 +101,19 @@ func testGeneratePolicyManagerImpl(tpm *testPolicyManagerImpl) *policyManagerImp
 	if !reflect.DeepEqual(tpm.cgroupCPUSet, tpmDefault.cgroupCPUSet) {
 		pm.cgroupCPUSet = tpm.cgroupCPUSet
 	}
+	if !reflect.DeepEqual(tpm.cgroupManager, tpmDefault.cgroupManager) {
+		pm.cgroupManager = tpm.cgroupManager
+	}
 
 	return pm
+}
+
+// testGenerateCgroupName is used to get CgroupName and CgroupPath for GetPodContainerName()
+// Examples:
+// cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
+// cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
+func testGenerateCgroupName(pod *v1.Pod) CgroupName {
+	return CgroupName{"kubepods", "burstable", string(pod.UID)}
 }
 
 // Check if the cgroup values in two policyManagerImpl equal
@@ -194,6 +189,9 @@ func TestNewPolicyManagerAndStart(t *testing.T) {
 			newPodContainerManager := func() PodContainerManager {
 				return new(MockPodContainerManager)
 			}
+			activePodsFunc := func() []*v1.Pod {
+				return []*v1.Pod{}
+			}
 
 			// Action:
 			// NewPolicyManager(...) and then PolicyManager.Start(),
@@ -202,7 +200,7 @@ func TestNewPolicyManagerAndStart(t *testing.T) {
 				new(MockCgroupManager), newPodContainerManager,
 				cpuTopologyFake, cpusSpecificFake, nodeAllocatableReservationFake)
 			if err == nil {
-				err = newPolicyManager.Start()
+				err = newPolicyManager.Start(activePodsFunc)
 			}
 
 			// Assertion
@@ -254,13 +252,13 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			isDependencyCalled: false,
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyDefault: testPodPolicyDefault,
+					"1": testGeneratePodUIDAndPolicy("1", policyDefault),
 				},
 			}),
-			pod: testPodPolicyDefault,
+			pod: testGeneratePodUIDAndPolicy("1", policyDefault),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyDefault: testPodPolicyDefault,
+					"1": testGeneratePodUIDAndPolicy("1", policyDefault),
 				},
 			}),
 			expErr: fmt.Errorf("fake error"),
@@ -273,10 +271,10 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			description:        "Fail, policy unknown, single existing pod",
 			isDependencyCalled: false,
 			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pod:                testPodPolicyUnknown,
+			pod:                testGeneratePodUIDAndPolicy("1", policyUnknown),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyUnknown: testPodPolicyUnknown,
+					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
 				},
 			}),
 			expErr: fmt.Errorf("fake error"),
@@ -286,23 +284,24 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			isDependencyCalled: false,
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyDefault:  testPodPolicyDefault,
-					testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-					testUIDPolicyIsolated: testPodPolicyIsolated,
+					"2": testGeneratePodUIDAndPolicy("2", policyDefault),
+					"3": testGeneratePodUIDAndPolicy("3", policyCPUCFS),
+					"4": testGeneratePodUIDAndPolicy("4", policyIsolated),
 				},
 			}),
-			pod: testPodPolicyUnknown,
+			pod: testGeneratePodUIDAndPolicy("1", policyUnknown),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyUnknown:  testPodPolicyUnknown,
-					testUIDPolicyDefault:  testPodPolicyDefault,
-					testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-					testUIDPolicyIsolated: testPodPolicyIsolated,
+					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
+					"2": testGeneratePodUIDAndPolicy("2", policyDefault),
+					"3": testGeneratePodUIDAndPolicy("3", policyCPUCFS),
+					"4": testGeneratePodUIDAndPolicy("4", policyIsolated),
 				},
 			}),
 			expErr: fmt.Errorf("fake error"),
 		},
 	}...)
+
 	// // For these policies, pod is added to all Cgroup
 	// reasonArray := []string{policyDefault, policyCPUCFS, policyIsolated}
 	// uidArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
@@ -393,13 +392,28 @@ func TestPolicyManagerAddPodAllCgroup(t *testing.T) {
 	}
 	var testCaseArray []testCaseStruct
 
-	reasonArray := []string{policyDefault, policyCPUCFS, policyIsolated}
-	uidArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
-	podArray := []*v1.Pod{testPodPolicyDefault, testPodPolicyCPUCFS, testPodPolicyIsolated}
+	// For all supported policies
+	policyMap := map[string]struct {
+		uidString string
+		pod       *v1.Pod
+	}{
+		policyDefault: {
+			uidString: "1",
+			pod:       testGeneratePodUIDAndPolicy("1", policyDefault),
+		},
+		policyCPUCFS: {
+			uidString: "2",
+			pod:       testGeneratePodUIDAndPolicy("2", policyCPUCFS),
+		},
+		policyIsolated: {
+			uidString: "3",
+			pod:       testGeneratePodUIDAndPolicy("3", policyIsolated),
+		},
+	}
 	errCCSAArray := []error{nil, fmt.Errorf("fake error")}
 	errCCCAArray := []error{nil, fmt.Errorf("fake error")}
 	// For these policies, pod is added to all Cgroup
-	for i, reason := range reasonArray {
+	for policy, value := range policyMap {
 		// For possible error from Cgroup.AddPod()
 		for _, errCCSA := range errCCSAArray {
 			for _, errCCCA := range errCCCAArray {
@@ -409,17 +423,17 @@ func TestPolicyManagerAddPodAllCgroup(t *testing.T) {
 
 				testCaseArray = append(testCaseArray, testCaseStruct{
 					description: fmt.Sprintf("Fail, for policy (%q), with errCPUSetAddPod (%q), errCPUCFSAddPod (%q)",
-						reason, errCCCA, errCCSA),
+						policy, errCCCA, errCCSA),
 					isDependencyCalled: true,
 					pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 						uidToPod: map[string]*v1.Pod{
-							uidArray[i]: podArray[i],
+							value.uidString: value.pod,
 						},
 					}),
-					pod: podArray[i],
+					pod: value.pod,
 					pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 						uidToPod: map[string]*v1.Pod{
-							uidArray[i]: podArray[i],
+							value.uidString: value.pod,
 						},
 					}),
 					errCPUCFSAddPod: errCCCA,
@@ -484,7 +498,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			description:        "Fail, pod not added yet",
 			isDependencyCalled: false,
 			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pod:                testPodPolicyDefault,
+			pod:                testGeneratePodUIDAndPolicy("1", policyDefault),
 			pmAfter:            testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
 			expErr:             fmt.Errorf("fake error"),
 		},
@@ -497,10 +511,10 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			isDependencyCalled: false,
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyUnknown: testPodPolicyUnknown,
+					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
 				},
 			}),
-			pod:     testPodPolicyUnknown,
+			pod:     testGeneratePodUIDAndPolicy("1", policyUnknown),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
 			expErr:  fmt.Errorf("fake error"),
 		},
@@ -509,18 +523,18 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			isDependencyCalled: false,
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyUnknown:  testPodPolicyUnknown,
-					testUIDPolicyDefault:  testPodPolicyDefault,
-					testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-					testUIDPolicyIsolated: testPodPolicyIsolated,
+					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
+					"2": testGeneratePodUIDAndPolicy("2", policyDefault),
+					"3": testGeneratePodUIDAndPolicy("3", policyCPUCFS),
+					"4": testGeneratePodUIDAndPolicy("4", policyIsolated),
 				},
 			}),
-			pod: testPodPolicyUnknown,
+			pod: testGeneratePodUIDAndPolicy("1", policyUnknown),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
-					testUIDPolicyDefault:  testPodPolicyDefault,
-					testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-					testUIDPolicyIsolated: testPodPolicyIsolated,
+					"2": testGeneratePodUIDAndPolicy("2", policyDefault),
+					"3": testGeneratePodUIDAndPolicy("3", policyCPUCFS),
+					"4": testGeneratePodUIDAndPolicy("4", policyIsolated),
 				},
 			}),
 			expErr: fmt.Errorf("fake error"),
@@ -615,12 +629,24 @@ func TestPolicyManagerRemovePodAllCgroup(t *testing.T) {
 	}
 	var testCaseArray []testCaseStruct
 
-	reasonArray := []string{policyDefault, policyCPUCFS, policyIsolated}
-	uidArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
+	// For all supported policies
+	policyMap := map[string]struct {
+		uidString string
+	}{
+		policyDefault: {
+			uidString: "1",
+		},
+		policyCPUCFS: {
+			uidString: "2",
+		},
+		policyIsolated: {
+			uidString: "3",
+		},
+	}
 	errCCSRArray := []error{nil, fmt.Errorf("fake error")}
 	errCCCRArray := []error{nil, fmt.Errorf("fake error")}
 	// For these policies, pod is removed from all Cgroup
-	for i, reason := range reasonArray {
+	for policy, value := range policyMap {
 		// For possible error from Cgroup.RemovePod()
 		for _, errCCSR := range errCCSRArray {
 			for _, errCCCR := range errCCCRArray {
@@ -630,10 +656,10 @@ func TestPolicyManagerRemovePodAllCgroup(t *testing.T) {
 
 				testCaseArray = append(testCaseArray, testCaseStruct{
 					description: fmt.Sprintf("Fail, for policy (%q), with errCPUSetRemovePod (%q), errCPUCFSRemovePod (%q)",
-						reason, errCCCR, errCCSR),
+						policy, errCCCR, errCCSR),
 					isDependencyCalled: true,
 					pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-					podUID:             uidArray[i],
+					podUID:             value.uidString,
 					pmAfter:            testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
 					errCPUCFSRemovePod: errCCCR,
 					errCPUSetRemovePod: errCCSR,
@@ -670,130 +696,244 @@ func TestPolicyManagerRemovePodAllCgroup(t *testing.T) {
 }
 
 func TestPolicyManagerUpdateToHost(t *testing.T) {
+	type mockStruct struct {
+		rcCCS *ResourceConfig
+		cc    *CgroupConfig
+		errCM error
+	}
 	type testCaseStruct struct {
 		description string
 		pm          *policyManagerImpl
-		pod         *v1.Pod
+		podUpdated  *v1.Pod
 		isAdded     bool
+		mockMap     map[*v1.Pod]*mockStruct
 		rcCCC       *ResourceConfig
 		isTracked   bool
-		// cgroupConfig        *CgroupConfig
-		// expErrCgroupManager error
-		expErr error
+		expErr      error
 	}
 	var testCaseArray []testCaseStruct
 
-	// We can only resue this pointer/map when function being test does not modify its value,
-	// thus we cannot make it global and used by testing .AddPod()/RemovePod()
-	pmFake := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-		uidToPod: map[string]*v1.Pod{
-			testUIDPolicyUnknown:  testPodPolicyUnknown,
-			testUIDPolicyDefault:  testPodPolicyDefault,
-			testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-			testUIDPolicyIsolated: testPodPolicyIsolated,
+	// Set up all pods currently running in the host
+	podDetailArray := []struct {
+		pod             *v1.Pod
+		rcCCCIsTracked  *ResourceConfig
+		rcCCCNotTracked *ResourceConfig
+		rcCCSIsTracked  *ResourceConfig
+		rcAllIsTracked  *ResourceConfig
+		rcCCSNotTracked *ResourceConfig
+		rcAllNotTracked *ResourceConfig
+	}{
+		{
+			pod:             testGeneratePodWithUID("1"),
+			rcCCCIsTracked:  &ResourceConfig{},
+			rcCCCNotTracked: &ResourceConfig{},
+			rcCCSIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+			},
+			rcAllIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+			},
+			rcCCSNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(11, 12).String()),
+			},
+			rcAllNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(11, 12).String()),
+			},
 		},
-	})
+		{
+			pod: testGeneratePodWithUID("2"),
+			rcCCCIsTracked: &ResourceConfig{
+				CpuShares: testCopyUint64(21),
+			},
+			rcCCCNotTracked: &ResourceConfig{},
+			rcCCSIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(2).String()),
+			},
+			rcAllIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(2).String()),
+			},
+			rcCCSNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(21).String()),
+			},
+			rcAllNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(21).String()),
+			},
+		},
+		{
+			pod: testGeneratePodWithUID("3"),
+			rcCCCIsTracked: &ResourceConfig{
+				CpuShares: testCopyUint64(31),
+				CpuQuota:  testCopyInt64(32),
+				CpuPeriod: testCopyUint64(33),
+			},
+			rcCCCNotTracked: &ResourceConfig{},
+			rcCCSIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(31, 32, 33).String()),
+			},
+			rcAllIsTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(31, 32, 33).String()),
+			},
+			rcCCSNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(1, 2, 3).String()),
+			},
+			rcAllNotTracked: &ResourceConfig{
+				CpusetCpus: testCopyString(cpuset.NewCPUSet(1, 2, 3).String()),
+			},
+		},
+	}
 
-	// For all supported policies,
-	// the value is also different depend on whether the pod isAdded
-	isAddedArray := []bool{true, false}
-	isTrackedArray := []bool{true, false}
-	podArray := []*v1.Pod{testPodPolicyDefault, testPodPolicyCPUCFS, testPodPolicyIsolated}
-	rcCCCArray := []*ResourceConfig{testRCCCCPolicyDefault, testRCCCCPolicyCPUCFS, testRCCCCPolicyIsolated}
-	for i, pod := range podArray {
+	pm := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+		uidToPod: make(map[string]*v1.Pod),
+	})
+	for _, pd := range podDetailArray {
+		pm.uidToPod[string(pd.pod.UID)] = pd.pod
+	}
+
+	// For pods of different policies, after AddPod/RemovePod()
+	for _, pdUpdated := range podDetailArray {
+		isAddedArray := []bool{true, false}
+		isTrackedArray := []bool{true, false}
 		for _, isAdded := range isAddedArray {
 			for _, isTracked := range isTrackedArray {
-				rcCCC := rcCCCArray[i]
-				if !isAdded {
-					rcCCC = testRCCCCNotTracked
-				}
 				expErr := fmt.Errorf("fake error")
 				if isAdded == isTracked {
 					expErr = nil
 				}
+				// Host-global Cgroup for all pods
+				mockMap := make(map[*v1.Pod]*mockStruct)
+				for _, pd := range podDetailArray {
+					var rcAll *ResourceConfig
+					var rcCCS *ResourceConfig
+					// When the pod is just being added, or removed
+					if isAdded {
+						rcCCS = pd.rcCCSIsTracked
+						rcAll = pd.rcAllIsTracked
+					} else {
+						rcCCS = pd.rcCCSNotTracked
+						rcAll = pd.rcAllNotTracked
+					}
+					mockMap[pd.pod] = &mockStruct{
+						rcCCS: rcCCS,
+						cc: &CgroupConfig{
+							Name:               testGenerateCgroupName(pd.pod),
+							ResourceParameters: rcAll,
+						},
+					}
+				}
+
+				// Pod-local Cgroup of only the current pod is added to the result.
+				var rcCCC *ResourceConfig
+				if isAdded {
+					rcCCC = pdUpdated.rcCCCIsTracked
+				} else {
+					rcCCC = pdUpdated.rcCCCNotTracked
+				}
+				// Make sure original rcCCC is not modified for other iterations
+				rcUpdated := &ResourceConfig{}
+				mergo.Merge(rcUpdated, mockMap[pdUpdated.pod].cc.ResourceParameters)
+				mergo.Merge(rcUpdated, rcCCC)
+				mockMap[pdUpdated.pod].cc.ResourceParameters = rcUpdated
 
 				testCaseArray = append(testCaseArray, []testCaseStruct{
 					{
-						description: fmt.Sprintf("Complete with error (%v), for isAdded (%v), isTracked (%v)",
-							expErr, isTracked, isAdded),
-						pm:        pmFake,
-						pod:       pod,
-						isAdded:   isAdded,
-						rcCCC:     rcCCC,
-						isTracked: isTracked,
-						expErr:    expErr,
+						description: fmt.Sprintf("For policy (%q), Complete with error (%v), for isAdded (%v), isTracked (%v)",
+							pdUpdated.pod.Spec.Policy, expErr, isTracked, isAdded),
+						pm:         pm,
+						podUpdated: pdUpdated.pod,
+						isAdded:    isAdded,
+						rcCCC:      rcCCC,
+						isTracked:  isTracked,
+						mockMap:    mockMap,
+						expErr:     expErr,
 					},
 				}...)
 			}
 		}
 	}
 
-	// // No existing pod in cgroupCPUSet
-	// cgroupName := CgroupName{"kubepods", "burstable", "pod1234-abcd-5678-efgh"}
-	// cgroupPath := "kubepods/burstable/pod1234-abcd-5678-efgh"
+	// When fails for error from CgroupManager.Update() for any pod fails,
+	// simple setup after AddPod()
+	for _, pdUpdated := range podDetailArray {
+		// Any pods may got error calling CgroupManager.Update()
+		for _, pd := range podDetailArray {
+			// Host-global Cgroup for all pods
+			mockMap := make(map[*v1.Pod]*mockStruct)
+			for _, pd := range podDetailArray {
+				mockMap[pd.pod] = &mockStruct{
+					rcCCS: pd.rcCCSIsTracked,
+					cc: &CgroupConfig{
+						Name:               testGenerateCgroupName(pd.pod),
+						ResourceParameters: pd.rcAllIsTracked,
+					},
+				}
+			}
+			// Pod-local Cgroup of only the current pod is added to the result.
+			// Make sure original rcCCC is not modified for other iterations
+			rcUpdated := &ResourceConfig{}
+			mergo.Merge(rcUpdated, mockMap[pdUpdated.pod].cc.ResourceParameters)
+			mergo.Merge(rcUpdated, pdUpdated.rcCCCIsTracked)
+			mockMap[pdUpdated.pod].cc.ResourceParameters = rcUpdated
 
-	// testCaseArray = append(testCaseArray, []testCaseStruct{
-	// 	{
-	// 		description: "Fail, error in calling CgroupManager.Update(...)",
-	// 		ccsBefore:   testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
-	// 		pod:         testGeneratePod(policyIsolated, "1", "1", "1"),
-	// 		ccsAfter: testGenerateCgroupCPUSet(&testCgroupCPUSet{
-	// 			podSet: sets.NewString("1"),
-	// 			cpusShared: testCPUSShared.
-	// 				Difference(cpuset.NewCPUSet(1)),
-	// 			podToCPUS: map[string]cpuset.CPUSet{
-	// 				"1": cpuset.NewCPUSet(1),
-	// 			},
-	// 		}),
-	// 		cgroupConfig: &CgroupConfig{
-	// 			Name: cgroupName,
-	// 			ResourceParameters: &ResourceConfig{
-	// 				CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
-	// 			},
-	// 		},
-	// 		expErrCgroupManager: fmt.Errorf("fake error"),
-	// 		expErr:              fmt.Errorf("fake error"),
-	// 	},
-	// }...)
+			// Set up error
+			mockMap[pd.pod].errCM = fmt.Errorf("fake error")
+
+			testCaseArray = append(testCaseArray, []testCaseStruct{
+				{
+					description: fmt.Sprintf("Fail, for pod (%q), got error from pod (%q) calling CgroupManager.Update()",
+						pdUpdated.pod.UID, pd.pod.UID),
+					pm:         pm,
+					podUpdated: pdUpdated.pod,
+					isAdded:    true,
+					rcCCC:      pdUpdated.rcCCCIsTracked,
+					isTracked:  true,
+					mockMap:    mockMap,
+					expErr:     fmt.Errorf("fake error"),
+				},
+			}...)
+		}
+	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			pm := tc.pm
+			pcmMock := new(MockPodContainerManager)
+			pm.newPodContainerManager = func() PodContainerManager {
+				return pcmMock
+			}
 			cccMock := pm.cgroupCPUCFS.(*MockCgroup)
-			cccMock.On("ReadPod", tc.pod).
-				Return(tc.rcCCC, tc.isTracked).Once()
+			ccsMock := pm.cgroupCPUSet.(*MockCgroup)
+			cmMock := pm.cgroupManager.(*MockCgroupManager)
+			activePods := []*v1.Pod{}
+			for pod, m := range tc.mockMap {
+				activePods = append(activePods, pod)
+				pcmMock.On("GetPodContainerName", pod).
+					Return(testGenerateCgroupName(pod), "").
+					Once()
+				cmMock.On("Update", m.cc).
+					Return(m.errCM).
+					Once()
+				ccsMock.On("ReadPod", pod).
+					Return(m.rcCCS, tc.isTracked).
+					Once()
+			}
+			pm.activePodsFunc = func() []*v1.Pod {
+				return activePods
+			}
+			cccMock.On("ReadPod", tc.podUpdated).
+				Return(tc.rcCCC, tc.isTracked).
+				Once()
 
-			// pcmMock := new(MockPodContainerManager)
-			// pcmMock.On("GetPodContainerName", tc.pod).
-			// 	Return(cgroupName, cgroupPath)
-			// ccs.newPodContainerManager = func() PodContainerManager {
-			// 	return pcmMock
-			// }
-			// cmMock := new(MockCgroupManager)
-			// // CgroupManager.Update(...) is only called at the last step
-			// if tc.expErr == nil {
-			// 	cmMock.On("Update", tc.cgroupConfig).
-			// 		Return(tc.expErrCgroupManager).
-			// 		Once()
-			// } else if tc.expErrCgroupManager != nil {
-			// 	cmMock.On("Update", tc.cgroupConfig).
-			// 		Return(tc.expErrCgroupManager).
-			// 		Once()
-			// }
-			// ccs.cgroupManager = cmMock
-			// ccs.activePodsFunc = func() []*v1.Pod {
-			// 	return []*v1.Pod{tc.pod}
-			// }
-
-			err := pm.updateToHost(tc.pod, tc.isAdded)
+			err := pm.updateToHost(tc.podUpdated, tc.isAdded)
 
 			if tc.expErr == nil {
 				assert.Nil(t, err)
 			} else {
 				assert.Error(t, err)
 			}
+			pcmMock.AssertExpectations(t)
 			cccMock.AssertExpectations(t)
-			// cmMock.AssertExpectations(t)
+			ccsMock.AssertExpectations(t)
+			cmMock.AssertExpectations(t)
 		})
 	}
 }

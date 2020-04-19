@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/imdario/mergo"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
@@ -41,11 +42,6 @@ func getPodPolicy(pod *v1.Pod) string {
 	return pod.Spec.Policy
 }
 
-// appendResourceConfig append des to src
-func appendResourceConfig(src, des *ResourceConfig) bool {
-	return false
-}
-
 type policyManagerImpl struct {
 	// Protect the entire PolicyManager, including any Cgroup.
 	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
@@ -63,8 +59,8 @@ type policyManagerImpl struct {
 	// Host-global, for cpuset related cgroup values
 	cgroupCPUSet Cgroup
 
-	// // activePodsFunc is a method for listing active pods on the node
-	// activePodsFunc ActivePodsFunc
+	// activePodsFunc is a method for listing active pods on the node
+	activePodsFunc ActivePodsFunc
 	// Interface for cgroup management
 	cgroupManager CgroupManager
 	// newPodContainerManager is a factory method returns PodContainerManager,
@@ -78,7 +74,6 @@ var _ PolicyManager = &policyManagerImpl{}
 // NewPolicyManager creates PolicyManager for pod level cgroup values
 func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	newCgroupCPUSet typeNewCgroupCPUSet,
-	// activePodsFunc ActivePodsFunc,
 	cgroupManager CgroupManager,
 	newPodContainerManager typeNewPodContainerManager,
 	cpuTopology *cputopology.CPUTopology,
@@ -97,10 +92,9 @@ func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	}
 
 	pm := &policyManagerImpl{
-		uidToPod:     make(map[string]*v1.Pod),
-		cgroupCPUCFS: cgroupCPUCFS,
-		cgroupCPUSet: cgroupCPUSet,
-		// activePodsFunc:         activePodsFunc,
+		uidToPod:               make(map[string]*v1.Pod),
+		cgroupCPUCFS:           cgroupCPUCFS,
+		cgroupCPUSet:           cgroupCPUSet,
 		cgroupManager:          cgroupManager,
 		newPodContainerManager: newPodContainerManager,
 	}
@@ -108,7 +102,7 @@ func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 	return pm, nil
 }
 
-func (pm *policyManagerImpl) Start() (rerr error) {
+func (pm *policyManagerImpl) Start(activePodsFunc ActivePodsFunc) (rerr error) {
 	klog.Infof("[policymanager] Start policyManagerImpl, %+v", pm)
 
 	if err := pm.cgroupCPUCFS.Start(); err != nil {
@@ -117,6 +111,8 @@ func (pm *policyManagerImpl) Start() (rerr error) {
 	if err := pm.cgroupCPUSet.Start(); err != nil {
 		return fmt.Errorf("fail to start cgroupCPUSet; %q", err)
 	}
+
+	pm.activePodsFunc = activePodsFunc
 
 	return nil
 }
@@ -191,40 +187,60 @@ func (pm *policyManagerImpl) addPodAllCgroup(pod *v1.Pod) error {
 // for CPUCFS, mode is unknown.
 // But in those cases, the failed pod is tracked,
 // and default value will be returned in the next writeHost step.
-func (pm *policyManagerImpl) updateToHost(pod *v1.Pod, isAdded bool) error {
-	resourceConfig := &ResourceConfig{}
+func (pm *policyManagerImpl) updateToHost(podUpdated *v1.Pod, isAdded bool) error {
+	pcm := pm.newPodContainerManager()
+	podToCC := make(map[*v1.Pod]*CgroupConfig)
+	for _, pod := range pm.activePodsFunc() {
+		cgroupName, _ := pcm.GetPodContainerName(pod)
+		podToCC[pod] = &CgroupConfig{
+			Name:               cgroupName,
+			ResourceParameters: &ResourceConfig{},
+		}
+	}
+
+	if _, found := podToCC[podUpdated]; !found {
+		return fmt.Errorf("Pod just updated is not in activePodsFunc()")
+	}
 
 	isFailed := false
-	rc, isTracked := pm.cgroupCPUCFS.ReadPod(pod)
+	// For pod-local Cgroup
+	rc := podToCC[podUpdated].ResourceParameters
+	resourceConfig, isTracked := pm.cgroupCPUCFS.ReadPod(podUpdated)
 	if isTracked != isAdded {
 		klog.Infof("[policymanager] cgroupCPUCFS, pod isAdded (%v) but isTracked (%v)",
 			isAdded, isTracked)
 		isFailed = true
 	}
-	if isConflict := appendResourceConfig(resourceConfig, rc); isConflict {
-		klog.Infof("[policymanager] cgroupCPUCFS, finding conflict fields when merging two ResourceConfig\n %+v\n %+v",
-			resourceConfig, rc)
+	if err := mergo.Merge(rc, resourceConfig); err != nil {
+		klog.Infof("[policymanager] cgroupCPUCFS, fails in merging two ResourceConfig\n %+v\n %+v",
+			rc, resourceConfig)
 		isFailed = true
 	}
 
-	// // Write cgroup values of all pods to host
-	// for _, pod := range pm.activePodsFunc() {
-	// 	// Get cgroup path to this pod
-	// 	pcm := pm.newPodContainerManager()
-	// 	cgroupName, cgroupPath := pcm.GetPodContainerName(pod)
+	// For host-global Cgroups
+	for pod := range podToCC {
+		rc = podToCC[pod].ResourceParameters
+		resourceConfig, isTracked := pm.cgroupCPUSet.ReadPod(pod)
+		if isTracked != isAdded {
+			klog.Infof("[policymanager] cgroupCPUSet, pod isAdded (%v) but isTracked (%v)",
+				isAdded, isTracked)
+			isFailed = true
+		}
+		if err := mergo.Merge(rc, resourceConfig); err != nil {
+			klog.Infof("[policymanager] cgroupCPUCFS, fails in merging two ResourceConfig\n %+v\n %+v",
+				rc, resourceConfig)
+			isFailed = true
+		}
+	}
 
-	// 	klog.Infof("[policymanager] For pod (%q), cgroupPath (%q) and ResourceParameters (%+v)",
-	// 		pod.Name, cgroupPath, rc)
-
-	// 	cgroupConfig := &CgroupConfig{
-	// 		Name:               cgroupName,
-	// 		ResourceParameters: rc,
-	// 	}
-
-	// 	if err := pm.cgroupManager.Update(cgroupConfig); err != nil {
-	// 		return err
-	// 	}
-	// }
+	// Write to host
+	for _, cc := range podToCC {
+		if err := pm.cgroupManager.Update(cc); err != nil {
+			klog.Infof("[policymanager] CgroupManager.Update() fails with error (%v)",
+				err)
+			isFailed = true
+		}
+	}
 
 	if isFailed {
 		return fmt.Errorf("updateToHost failed for reasons above")

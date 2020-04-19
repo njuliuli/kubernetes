@@ -658,7 +658,7 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	}
 
 	// Starts policy manager.
-	if err := cm.policyManager.Start(); err != nil {
+	if err := cm.policyManager.Start(activePods); err != nil {
 		return err
 	}
 

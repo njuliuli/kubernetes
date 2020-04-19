@@ -23,7 +23,7 @@ import (
 // PolicyManager interface provides methods for Kubelet to manage pod level cgroup values.
 type PolicyManager interface {
 	// Start is called during ContainerManager initialization.
-	Start() error
+	Start(activePodsFunc ActivePodsFunc) error
 	// Add a new pod to PolicyManager,
 	// as the exported API, it may be called concurrently
 	AddPod(pod *v1.Pod) error

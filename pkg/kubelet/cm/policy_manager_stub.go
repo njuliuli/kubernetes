@@ -25,7 +25,7 @@ type PolicyManagerStub struct {
 var _ PolicyManager = &PolicyManagerStub{}
 
 // Start is the test stub for success run
-func (m *PolicyManagerStub) Start() (rerr error) {
+func (m *PolicyManagerStub) Start(activePodsFunc ActivePodsFunc) (rerr error) {
 	return nil
 }
 
