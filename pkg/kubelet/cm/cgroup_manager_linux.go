@@ -323,6 +323,7 @@ func getSupportedSubsystems() map[subsystem]bool {
 	supportedSubsystems := map[subsystem]bool{
 		&cgroupfs.MemoryGroup{}: true,
 		&cgroupfs.CpuGroup{}:    true,
+		&cgroupfs.CpusetGroup{}: true,
 		&cgroupfs.PidsGroup{}:   false,
 	}
 	// not all hosts support hugetlb cgroup, and in the absent of hugetlb, we will fail silently by reporting no capacity.
