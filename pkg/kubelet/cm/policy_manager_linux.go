@@ -221,7 +221,7 @@ func (pm *policyManagerImpl) updateToHost(podUpdated *v1.Pod, isAdded bool) erro
 	for pod := range podToCC {
 		rc = podToCC[pod].ResourceParameters
 		resourceConfig, isTracked := pm.cgroupCPUSet.ReadPod(pod)
-		if isTracked != isAdded {
+		if pod == podUpdated && isTracked != isAdded {
 			klog.Infof("[policymanager] cgroupCPUSet, pod isAdded (%v) but isTracked (%v)",
 				isAdded, isTracked)
 			isFailed = true

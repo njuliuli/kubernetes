@@ -28,9 +28,56 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+)
+
+var (
+	// For cgroupCPUCFS
+	cpuSmall      = "100m"
+	cpuSmallShare = uint64(102)
+	cpuSmallQuota = int64(10000)
+	cpuLarge      = "200m"
+	cpuLargeQuota = int64(20000)
+
+	// Sample pods used in AddPod/RemovePod()
+	podArray = []struct {
+		description string
+		pod         *v1.Pod
+	}{
+		{
+			description: "PolicyDefault, in user space, using cpusShared pool",
+			pod: testGeneratePodWithNamespace(
+				policyDefault, "1", metav1.NamespaceDefault, "", ""),
+		},
+		{
+			description: "PolicyDefault, in system namespace, using cpusReserved pool",
+			pod: testGeneratePodWithNamespace(
+				policyDefault, "2", metav1.NamespaceSystem, "", ""),
+		},
+		{
+			description: "PolicyIsolated, cpusDedicated pool",
+			pod: testGeneratePodWithNamespace(
+				policyIsolated, "3", metav1.NamespaceDefault, "1", "1"),
+		},
+		{
+			description: "PolicyCPUCFS, request = limit = empty",
+			pod: testGeneratePodWithNamespace(
+				policyCPUCFS, "4", metav1.NamespaceDefault, "", ""),
+		},
+		{
+			description: "PolicyCPUCFS, request = limit",
+			pod: testGeneratePodWithNamespace(
+				policyCPUCFS, "5", metav1.NamespaceDefault, cpuSmall, cpuSmall),
+		},
+		{
+			description: "PolicyCPUCFS, request < limit",
+			pod: testGeneratePodWithNamespace(
+				policyCPUCFS, "6", metav1.NamespaceDefault, cpuSmall, cpuLarge),
+		},
+	}
 )
 
 // Generate pod with given fields set
@@ -61,6 +108,35 @@ func testGeneratePod(policy, uid, cpuRequest, cpuLimit string) *v1.Pod {
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			UID: types.UID(uid),
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Resources: rr,
+				},
+			},
+			Policy: policy,
+		},
+	}
+}
+
+func testGeneratePodWithNamespace(policy, uid, namespace, cpuRequest, cpuLimit string) *v1.Pod {
+	rr := v1.ResourceRequirements{}
+	if cpuRequest != "" {
+		rr.Requests = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuRequest),
+		}
+	}
+	if cpuLimit != "" {
+		rr.Limits = v1.ResourceList{
+			v1.ResourceCPU: resource.MustParse(cpuLimit),
+		}
+	}
+
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       types.UID(uid),
+			Namespace: namespace,
 		},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
@@ -117,12 +193,12 @@ func testGenerateCgroupName(pod *v1.Pod) CgroupName {
 }
 
 // Check if the cgroup values in two policyManagerImpl equal
-func testEqualPolicyManager(t *testing.T,
+func testEqualPolicyManagerImpl(t *testing.T,
 	expect *policyManagerImpl, actual *policyManagerImpl) {
 	assert.Equal(t, expect.uidToPod, actual.uidToPod)
 }
 
-func TestNewPolicyManagerAndStart(t *testing.T) {
+func TestNewPolicyManagerImplAndStart(t *testing.T) {
 	cpuTopologyFake := &cputopology.CPUTopology{}
 	cpusSpecificFake := cpuset.NewCPUSet()
 	nodeAllocatableReservationFake := v1.ResourceList{}
@@ -206,7 +282,7 @@ func TestNewPolicyManagerAndStart(t *testing.T) {
 			// Assertion
 			if tc.expErr == nil {
 				assert.Nil(t, err)
-				testEqualPolicyManager(t,
+				testEqualPolicyManagerImpl(t,
 					tc.expPolicyManager.(*policyManagerImpl),
 					newPolicyManager.(*policyManagerImpl))
 				cgroupCPUCFSMock.AssertExpectations(t)
@@ -222,34 +298,28 @@ func TestNewPolicyManagerAndStart(t *testing.T) {
 // Test for .AddPod(...) is like an integration test,
 // and details of its implementation is broken down to be tested below,
 // for .addPodCgroup and .updateToHost
-func TestPolicyManagerAddPod(t *testing.T) {
+func TestPolicyManagerImplAddPod(t *testing.T) {
 	// The construction of test table is completed by categories below
 	type testCaseStruct struct {
-		description        string
-		isDependencyCalled bool
-		pmBefore           *policyManagerImpl
-		pod                *v1.Pod
-		pmAfter            *policyManagerImpl
-		// errCPUCFSAddPod    error
-		// errCPUSetAddPod    error
-		// rcCCC              *ResourceConfig
-		// isTracked          bool
-		expErr error
+		description string
+		pmBefore    *policyManagerImpl
+		pod         *v1.Pod
+		mockMap     map[*v1.Pod]*ResourceConfig
+		pmAfter     *policyManagerImpl
+		expErr      error
 	}
 	var testCaseArray []testCaseStruct
 
 	// For simple pod validation
 	testCaseArray = append(testCaseArray, []testCaseStruct{
 		{
-			description:        "Fail, pod not existed",
-			isDependencyCalled: false,
-			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pmAfter:            testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			expErr:             fmt.Errorf("fake error"),
+			description: "Fail, pod not existed",
+			pmBefore:    testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			pmAfter:     testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			expErr:      fmt.Errorf("fake error"),
 		},
 		{
-			description:        "Fail, pod already exist",
-			isDependencyCalled: false,
+			description: "Fail, pod already exist",
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
 					"1": testGeneratePodUIDAndPolicy("1", policyDefault),
@@ -268,10 +338,9 @@ func TestPolicyManagerAddPod(t *testing.T) {
 	// For unknown policy
 	testCaseArray = append(testCaseArray, []testCaseStruct{
 		{
-			description:        "Fail, policy unknown, single existing pod",
-			isDependencyCalled: false,
-			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pod:                testGeneratePodUIDAndPolicy("1", policyUnknown),
+			description: "Fail, policy unknown, single existing pod",
+			pmBefore:    testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			pod:         testGeneratePodUIDAndPolicy("1", policyUnknown),
 			pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
 					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
@@ -280,8 +349,7 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			expErr: fmt.Errorf("fake error"),
 		},
 		{
-			description:        "Fail, policy unknown, multiple existing pods",
-			isDependencyCalled: false,
+			description: "Fail, policy unknown, multiple existing pods",
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
 					"2": testGeneratePodUIDAndPolicy("2", policyDefault),
@@ -302,67 +370,639 @@ func TestPolicyManagerAddPod(t *testing.T) {
 		},
 	}...)
 
-	// // For these policies, pod is added to all Cgroup
-	// reasonArray := []string{policyDefault, policyCPUCFS, policyIsolated}
-	// uidArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
-	// podArray := []*v1.Pod{testPodPolicyDefault, testPodPolicyCPUCFS, testPodPolicyIsolated}
-	// rcCCCArray := []*ResourceConfig{testRCCCCPolicyDefault, testRCCCCPolicyCPUCFS, testRCCCCPolicyIsolated}
-	// for i, reason := range reasonArray {
-	// 	testCaseArray = append(testCaseArray, testCaseStruct{
-	// 		description:        fmt.Sprintf("Success, simple for policy (%q)", reason),
-	// 		isDependencyCalled: true,
-	// 		pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-	// 		pod:                podArray[i],
-	// 		pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				uidArray[i]: podArray[i],
-	// 			},
-	// 		}),
-	// 		rcCCC:     rcCCCArray[i],
-	// 		isTracked: true,
-	// 	})
-	// }
+	// When no pod exist, the first pod is added
+	// Each of the pod will be added as the first pod
+	{
+		pmBefore := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod := podArray[0].pod
+		pmAfter := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+		})
+		// Host-global Cgroups is initialized with default one
+		ccsFake := pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusReservedFake := ccsFake.cpusReserved.String()
+		cpusSharedFake := ccsFake.cpusShared.String()
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[0].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[0].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmAfter,
+		})
 
-	// // For multiple existing pods
-	// testCaseArray = append(testCaseArray, []testCaseStruct{
-	// 	{
-	// 		description:        "Success, multiple existing pods",
-	// 		isDependencyCalled: true,
-	// 		pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				testUIDPolicyUnknown:  testPodPolicyUnknown,
-	// 				testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-	// 				testUIDPolicyIsolated: testPodPolicyIsolated,
-	// 			},
-	// 		}),
-	// 		pod: testPodPolicyDefault,
-	// 		pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				testUIDPolicyUnknown:  testPodPolicyUnknown,
-	// 				testUIDPolicyDefault:  testPodPolicyDefault,
-	// 				testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-	// 				testUIDPolicyIsolated: testPodPolicyIsolated,
-	// 			},
-	// 		}),
-	// 		rcCCC:     testRCCCCPolicyDefault,
-	// 		isTracked: true,
-	// 	},
-	// }...)
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[1].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[1].pod.UID): podArray[1].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[1].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[1].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[1].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[1].pod: {
+					CpusetCpus: testCopyString(cpusReservedFake),
+				},
+			},
+			pmAfter: pmAfter,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[2].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[2].pod.UID): podArray[2].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[2].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[2].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[2].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[2].pod: {
+					CpusetCpus: testCopyString(cpuset.NewCPUSet(1).String()),
+				},
+			},
+			pmAfter: pmAfter,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[3].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[3].pod.UID): podArray[3].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[3].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+				},
+				podToCPUQuota:  map[string]int64{},
+				podToCPUPeriod: map[string]uint64{},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[3].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[3].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[3].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+					CpuShares:  testCopyUint64(cpuSharesMin),
+				},
+			},
+			pmAfter: pmAfter,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[4].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[4].pod.UID): podArray[4].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[4].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[4].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[4].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[4].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[4].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+					CpuShares:  testCopyUint64(cpuSmallShare),
+					CpuQuota:   testCopyInt64(cpuSmallQuota),
+					CpuPeriod:  testCopyUint64(cpuPeriodDefault),
+				},
+			},
+			pmAfter: pmAfter,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[5].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[5].pod.UID): podArray[5].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[5].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[5].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[5].pod.UID): cpuLargeQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[5].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[5].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding first pod (%q)",
+				podArray[5].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[5].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+					CpuShares:  testCopyUint64(cpuSmallShare),
+					CpuQuota:   testCopyInt64(cpuLargeQuota),
+					CpuPeriod:  testCopyUint64(cpuPeriodDefault),
+				},
+			},
+			pmAfter: pmAfter,
+		})
+	}
+
+	// When pods are added accumulated, from the same podArray above
+	{
+		// Adding sampleArray[0].pod,
+		// (policyDefault, "1", metav1.NamespaceDefault, "", "")
+		pmBefore := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod := podArray[0].pod
+		pmAfter := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+		})
+		// Host-global Cgroups is initialized with default one
+		ccsFake := pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusReservedFake := ccsFake.cpusReserved.String()
+		cpusSharedFake := ccsFake.cpusShared.String()
+		mockMap := map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[0].pod (%q)",
+				podArray[0].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately adding sampleArray[1].pod
+		// (policyDefault, "2", metav1.NamespaceSystem, "", "")
+		pmBefore = pmAfter
+		pod = podArray[1].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+				),
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[1].pod (%q)",
+				podArray[1].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately adding sampleArray[2].pod
+		// (policyIsolated, "3", metav1.NamespaceDefault, "1", "1")
+		pmBefore = pmAfter
+		pod = podArray[2].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		// Update host-global Cgroup
+		ccsFake = pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusDedicatedFake := ccsFake.podToCPUS[string(podArray[2].pod.UID)].String()
+		cpusReservedFake = ccsFake.cpusReserved.String()
+		cpusSharedFake = ccsFake.cpusShared.String()
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[2].pod (%q)",
+				podArray[2].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately adding sampleArray[3].pod
+		// (policyCPUCFS, "4", metav1.NamespaceDefault, "", "")
+		pmBefore = pmAfter
+		pod = podArray[3].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+				},
+				podToCPUQuota:  map[string]int64{},
+				podToCPUPeriod: map[string]uint64{},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+				CpuShares:  testCopyUint64(cpuSharesMin),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[3].pod (%q)",
+				podArray[3].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately adding sampleArray[4].pod
+		// (policyCPUCFS, "5", metav1.NamespaceDefault, cpuSmall, cpuSmall)
+		pmBefore = pmAfter
+		pod = podArray[4].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+				string(podArray[4].pod.UID): podArray[4].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+					string(podArray[4].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[4].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+				CpuShares:  testCopyUint64(cpuSmallShare),
+				CpuQuota:   testCopyInt64(cpuSmallQuota),
+				CpuPeriod:  testCopyUint64(cpuPeriodDefault),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[4].pod (%q)",
+				podArray[4].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately adding sampleArray[5].pod
+		// (policyCPUCFS, "6", metav1.NamespaceDefault, cpuSmall, cpuLarge)
+		pmBefore = pmAfter
+		pod = podArray[5].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+				string(podArray[4].pod.UID): podArray[4].pod,
+				string(podArray[5].pod.UID): podArray[5].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+					string(podArray[5].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+					string(podArray[4].pod.UID): cpuSmallShare,
+					string(podArray[5].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+					string(podArray[5].pod.UID): cpuLargeQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+					string(podArray[5].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+					string(podArray[5].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[4].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[5].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+				CpuShares:  testCopyUint64(cpuSmallShare),
+				CpuQuota:   testCopyInt64(cpuLargeQuota),
+				CpuPeriod:  testCopyUint64(cpuPeriodDefault),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, adding sampleArray[5].pod (%q)",
+				podArray[5].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+	}
 
 	// testCaseArray is built by categories above
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			pm := tc.pmBefore
-			// ccsMock := pm.cgroupCPUSet.(*MockCgroup)
-			// cccMock := pm.cgroupCPUCFS.(*MockCgroup)
-			// if tc.isDependencyCalled {
-			// 	ccsMock.On("AddPod", tc.pod).
-			// 		Return(tc.errCPUSetAddPod).Once()
-			// 	cccMock.On("AddPod", tc.pod).
-			// 		Return(tc.errCPUCFSAddPod).Once()
-			// 	cccMock.On("ReadPod", string(tc.pod.UID)).
-			// 		Return(tc.rcCCC, tc.isTracked).Once()
-			// }
+			pcmMock := new(MockPodContainerManager)
+			pm.newPodContainerManager = func() PodContainerManager {
+				return pcmMock
+			}
+			cmMock := pm.cgroupManager.(*MockCgroupManager)
+			activePods := []*v1.Pod{}
+			for pod, resourceConfig := range tc.mockMap {
+				activePods = append(activePods, pod)
+				cgroupName := testGenerateCgroupName(pod)
+				pcmMock.On("GetPodContainerName", pod).
+					Return(cgroupName, "").
+					Once()
+				cgroupConfig := &CgroupConfig{
+					Name:               cgroupName,
+					ResourceParameters: resourceConfig,
+				}
+				cmMock.On("Update", cgroupConfig).
+					Return(nil).
+					Once()
+			}
+			pm.activePodsFunc = func() []*v1.Pod {
+				return activePods
+			}
 
 			err := pm.AddPod(tc.pod)
 
@@ -371,14 +1011,14 @@ func TestPolicyManagerAddPod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			testEqualPolicyManager(t, tc.pmAfter, pm)
-			// ccsMock.AssertExpectations(t)
-			// cccMock.AssertExpectations(t)
+			testEqualPolicyManagerImpl(t, tc.pmAfter, pm)
+			pcmMock.AssertExpectations(t)
+			cmMock.AssertExpectations(t)
 		})
 	}
 }
 
-func TestPolicyManagerAddPodAllCgroup(t *testing.T) {
+func TestPolicyManagerImplAddPodAllCgroup(t *testing.T) {
 	// The construction of test table is completed by categories below
 	type testCaseStruct struct {
 		description        string
@@ -463,52 +1103,45 @@ func TestPolicyManagerAddPodAllCgroup(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			testEqualPolicyManager(t, tc.pmAfter, pm)
+			testEqualPolicyManagerImpl(t, tc.pmAfter, pm)
 			ccsMock.AssertExpectations(t)
 			cccMock.AssertExpectations(t)
 		})
 	}
 }
 
-func TestPolicyManagerRemovePod(t *testing.T) {
+func TestPolicyManagerImplRemovePod(t *testing.T) {
 	type testCaseStruct struct {
-		description        string
-		isDependencyCalled bool
-		pmBefore           *policyManagerImpl
-		pod                *v1.Pod
-		pmAfter            *policyManagerImpl
-		// errCPUSetRemovePod error
-		// errCPUCFSRemovePod error
-		// rcCCC              *ResourceConfig
-		// isTracked          bool
-		expErr error
+		description string
+		pmBefore    *policyManagerImpl
+		pod         *v1.Pod
+		mockMap     map[*v1.Pod]*ResourceConfig
+		pmAfter     *policyManagerImpl
+		expErr      error
 	}
 	var testCaseArray []testCaseStruct
 
 	// For simple pod validation
 	testCaseArray = append(testCaseArray, []testCaseStruct{
 		{
-			description:        "Fail, pod not existed",
-			isDependencyCalled: false,
-			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pmAfter:            testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			expErr:             fmt.Errorf("fake error"),
+			description: "Fail, pod not existed",
+			pmBefore:    testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			pmAfter:     testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			expErr:      fmt.Errorf("fake error"),
 		},
 		{
-			description:        "Fail, pod not added yet",
-			isDependencyCalled: false,
-			pmBefore:           testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			pod:                testGeneratePodUIDAndPolicy("1", policyDefault),
-			pmAfter:            testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-			expErr:             fmt.Errorf("fake error"),
+			description: "Fail, pod not added yet",
+			pmBefore:    testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			pod:         testGeneratePodUIDAndPolicy("1", policyDefault),
+			pmAfter:     testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
+			expErr:      fmt.Errorf("fake error"),
 		},
 	}...)
 
 	// For unknown policy
 	testCaseArray = append(testCaseArray, []testCaseStruct{
 		{
-			description:        "Fail, policy unknown, single existing pod",
-			isDependencyCalled: false,
+			description: "Fail, policy unknown, single existing pod",
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
 					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
@@ -519,8 +1152,7 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			expErr:  fmt.Errorf("fake error"),
 		},
 		{
-			description:        "Fail, policy unknown, multiple existing pods",
-			isDependencyCalled: false,
+			description: "Fail, policy unknown, multiple existing pods",
 			pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
 				uidToPod: map[string]*v1.Pod{
 					"1": testGeneratePodUIDAndPolicy("1", policyUnknown),
@@ -541,66 +1173,627 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 		},
 	}...)
 
-	// // For these policies, pod is removed from all Cgroup
-	// reasonArray := []string{policyDefault, policyCPUCFS, policyIsolated}
-	// uidArray := []string{testUIDPolicyDefault, testUIDPolicyCPUCFS, testUIDPolicyIsolated}
-	// podArray := []*v1.Pod{testPodPolicyDefault, testPodPolicyCPUCFS, testPodPolicyIsolated}
-	// rcCCCArray := []*ResourceConfig{testRCCCCPolicyDefault, testRCCCCPolicyCPUCFS, testRCCCCPolicyIsolated}
-	// for i, reason := range reasonArray {
-	// 	testCaseArray = append(testCaseArray, testCaseStruct{
-	// 		description:        fmt.Sprintf("Success, simple for policy (%q)", reason),
-	// 		isDependencyCalled: true,
-	// 		pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				uidArray[i]: podArray[i],
-	// 			},
-	// 		}),
-	// 		pod:       podArray[i],
-	// 		pmAfter:   testGeneratePolicyManagerImpl(&testPolicyManagerImpl{}),
-	// 		rcCCC:     rcCCCArray[i],
-	// 		isTracked: false,
-	// 	})
-	// }
+	// When the only existing pod is removed
+	// Each of the pod will be removed as the only existing pod
+	// The data is the exact the reverse of TestPolicyManagerAddPod() above
+	{
+		pmBefore := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod := podArray[0].pod
+		pmAfter := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+		})
+		// Host-global Cgroups is initialized with default one
+		ccsFake := pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusReservedFake := ccsFake.cpusReserved.String()
+		cpusSharedFake := ccsFake.cpusShared.String()
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[0].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[0].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
 
-	// // Successfully remove existing pod from tracked pods
-	// testCaseArray = append(testCaseArray, []testCaseStruct{
-	// 	{
-	// 		description:        "Success, multiple existing pod",
-	// 		isDependencyCalled: true,
-	// 		pmBefore: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				testUIDPolicyUnknown:  testPodPolicyUnknown,
-	// 				testUIDPolicyDefault:  testPodPolicyDefault,
-	// 				testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-	// 				testUIDPolicyIsolated: testPodPolicyIsolated,
-	// 			},
-	// 		}),
-	// 		pod: testPodPolicyDefault,
-	// 		pmAfter: testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
-	// 			uidToPod: map[string]*v1.Pod{
-	// 				testUIDPolicyUnknown:  testPodPolicyUnknown,
-	// 				testUIDPolicyCPUCFS:   testPodPolicyCPUCFS,
-	// 				testUIDPolicyIsolated: testPodPolicyIsolated,
-	// 			},
-	// 		}),
-	// 		rcCCC:     testRCCCCPolicyDefault,
-	// 		isTracked: false,
-	// 	},
-	// }...)
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[1].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[1].pod.UID): podArray[1].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[1].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[1].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[1].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[1].pod: {
+					CpusetCpus: testCopyString(cpusReservedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[2].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[2].pod.UID): podArray[2].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[2].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[2].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[2].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[2].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[3].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[3].pod.UID): podArray[3].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[3].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+				},
+				podToCPUQuota:  map[string]int64{},
+				podToCPUPeriod: map[string]uint64{},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[3].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[3].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[3].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[4].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[4].pod.UID): podArray[4].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[4].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[4].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[4].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[4].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[4].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
+
+		pmBefore = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		pod = podArray[5].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[5].pod.UID): podArray[5].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[5].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[5].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[5].pod.UID): cpuLargeQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[5].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[5].pod.UID),
+				),
+			}),
+		})
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing the only pod (%q)",
+				podArray[5].description),
+			pmBefore: pmAfter,
+			pod:      pod,
+			mockMap: map[*v1.Pod]*ResourceConfig{
+				podArray[5].pod: {
+					CpusetCpus: testCopyString(cpusSharedFake),
+				},
+			},
+			pmAfter: pmBefore,
+		})
+	}
+
+	// When pods are removed accumulated, from the same podArray above
+	// This process is exact the reverse order of TestPolicyManagerAddPod() above
+	{
+		// Accumulately removing sampleArray[5].pod
+		// (policyCPUCFS, "6", metav1.NamespaceDefault, cpuSmall, cpuLarge)
+		pmBefore := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+				string(podArray[4].pod.UID): podArray[4].pod,
+				string(podArray[5].pod.UID): podArray[5].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+					string(podArray[5].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+					string(podArray[4].pod.UID): cpuSmallShare,
+					string(podArray[5].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+					string(podArray[5].pod.UID): cpuLargeQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+					string(podArray[5].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+					string(podArray[5].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		pod := podArray[5].pod
+		pmAfter := testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+				string(podArray[4].pod.UID): podArray[4].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+					string(podArray[4].pod.UID): cpuSmallShare,
+				},
+				podToCPUQuota: map[string]int64{
+					string(podArray[4].pod.UID): cpuSmallQuota,
+				},
+				podToCPUPeriod: map[string]uint64{
+					string(podArray[4].pod.UID): cpuPeriodDefault,
+				},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+					string(podArray[4].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		// Update host-global Cgroup
+		// cpusDedicatedFake := cpuset.NewCPUSet(1).String()
+		ccsFake := pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusDedicatedFake := ccsFake.podToCPUS[string(podArray[2].pod.UID)].String()
+		cpusReservedFake := ccsFake.cpusReserved.String()
+		cpusSharedFake := ccsFake.cpusShared.String()
+		mockMap := map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[4].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[5].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[5].pod (%q)",
+				podArray[5].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately removing sampleArray[4].pod
+		// (policyCPUCFS, "5", metav1.NamespaceDefault, cpuSmall, cpuSmall)
+		pmBefore = pmAfter
+		pod = podArray[4].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+				string(podArray[3].pod.UID): podArray[3].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+				),
+				podToCPUShares: map[string]uint64{
+					string(podArray[3].pod.UID): cpuSharesMin,
+				},
+				podToCPUQuota:  map[string]int64{},
+				podToCPUPeriod: map[string]uint64{},
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+					string(podArray[3].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[4].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[4].pod (%q)",
+				podArray[4].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately removing sampleArray[3].pod
+		// (policyCPUCFS, "4", metav1.NamespaceDefault, "", "")
+		pmBefore = pmAfter
+		pod = podArray[3].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+				string(podArray[2].pod.UID): podArray[2].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+					string(podArray[2].pod.UID),
+				),
+				cpusShared: testCPUSShared.
+					Difference(cpuset.NewCPUSet(1)),
+				podToCPUS: map[string]cpuset.CPUSet{
+					string(podArray[2].pod.UID): cpuset.NewCPUSet(1),
+				},
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusDedicatedFake),
+			},
+			podArray[3].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[3].pod (%q)",
+				podArray[3].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately removing sampleArray[2].pod
+		// (policyIsolated, "3", metav1.NamespaceDefault, "1", "1")
+		pmBefore = pmAfter
+		pod = podArray[2].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+				string(podArray[1].pod.UID): podArray[1].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+					string(podArray[1].pod.UID),
+				),
+			}),
+		})
+		// Update host-global Cgroup
+		ccsFake = pmAfter.cgroupCPUSet.(*cgroupCPUSet)
+		cpusReservedFake = ccsFake.cpusReserved.String()
+		cpusSharedFake = ccsFake.cpusShared.String()
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+			podArray[2].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[2].pod (%q)",
+				podArray[2].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Accumulately removing sampleArray[1].pod
+		// (policyDefault, "2", metav1.NamespaceSystem, "", "")
+		pmBefore = pmAfter
+		pod = podArray[1].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod: map[string]*v1.Pod{
+				string(podArray[0].pod.UID): podArray[0].pod,
+			},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{
+				podSet: sets.NewString(
+					string(podArray[0].pod.UID),
+				),
+			}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+			podArray[1].pod: {
+				CpusetCpus: testCopyString(cpusReservedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[1].pod (%q)",
+				podArray[1].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+
+		// Removing sampleArray[0].pod,
+		// (policyDefault, "1", metav1.NamespaceDefault, "", "")
+		pmBefore = pmAfter
+		pod = podArray[0].pod
+		pmAfter = testGeneratePolicyManagerImpl(&testPolicyManagerImpl{
+			uidToPod:     map[string]*v1.Pod{},
+			cgroupCPUCFS: testGenerateCgroupCPUCFS(&testCgroupCPUCFS{}),
+			cgroupCPUSet: testGenerateCgroupCPUSet(&testCgroupCPUSet{}),
+		})
+		mockMap = map[*v1.Pod]*ResourceConfig{
+			podArray[0].pod: {
+				CpusetCpus: testCopyString(cpusSharedFake),
+			},
+		}
+		testCaseArray = append(testCaseArray, testCaseStruct{
+			description: fmt.Sprintf("Success, removing sampleArray[0].pod (%q)",
+				podArray[0].description),
+			pmBefore: pmBefore,
+			pod:      pod,
+			mockMap:  mockMap,
+			pmAfter:  pmAfter,
+		})
+	}
 
 	for _, tc := range testCaseArray {
 		t.Run(tc.description, func(t *testing.T) {
 			pm := tc.pmBefore
-			// ccsMock := pm.cgroupCPUSet.(*MockCgroup)
-			// cccMock := pm.cgroupCPUCFS.(*MockCgroup)
-			// if tc.isDependencyCalled {
-			// 	ccsMock.On("RemovePod", string(tc.pod.UID)).
-			// 		Return(tc.errCPUSetRemovePod).Once()
-			// 	cccMock.On("RemovePod", string(tc.pod.UID)).
-			// 		Return(tc.errCPUCFSRemovePod).Once()
-			// 	cccMock.On("ReadPod", string(tc.pod.UID)).
-			// 		Return(tc.rcCCC, tc.isTracked).Once()
-			// }
+			pcmMock := new(MockPodContainerManager)
+			pm.newPodContainerManager = func() PodContainerManager {
+				return pcmMock
+			}
+			cmMock := pm.cgroupManager.(*MockCgroupManager)
+			activePods := []*v1.Pod{}
+			for pod, resourceConfig := range tc.mockMap {
+				activePods = append(activePods, pod)
+				cgroupName := testGenerateCgroupName(pod)
+				pcmMock.On("GetPodContainerName", pod).
+					Return(cgroupName, "").
+					Once()
+				cgroupConfig := &CgroupConfig{
+					Name:               cgroupName,
+					ResourceParameters: resourceConfig,
+				}
+				cmMock.On("Update", cgroupConfig).
+					Return(nil).
+					Once()
+			}
+			pm.activePodsFunc = func() []*v1.Pod {
+				return activePods
+			}
 
 			err := pm.RemovePod(tc.pod)
 
@@ -609,14 +1802,14 @@ func TestPolicyManagerRemovePod(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			testEqualPolicyManager(t, tc.pmAfter, pm)
-			// ccsMock.AssertExpectations(t)
-			// cccMock.AssertExpectations(t)
+			testEqualPolicyManagerImpl(t, tc.pmAfter, pm)
+			pcmMock.AssertExpectations(t)
+			cmMock.AssertExpectations(t)
 		})
 	}
 }
 
-func TestPolicyManagerRemovePodAllCgroup(t *testing.T) {
+func TestPolicyManagerImplRemovePodAllCgroup(t *testing.T) {
 	type testCaseStruct struct {
 		description        string
 		isDependencyCalled bool
@@ -688,14 +1881,14 @@ func TestPolicyManagerRemovePodAllCgroup(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-			testEqualPolicyManager(t, tc.pmAfter, pm)
+			testEqualPolicyManagerImpl(t, tc.pmAfter, pm)
 			ccsMock.AssertExpectations(t)
 			cccMock.AssertExpectations(t)
 		})
 	}
 }
 
-func TestPolicyManagerUpdateToHost(t *testing.T) {
+func TestPolicyManagerImplUpdateToHost(t *testing.T) {
 	type mockStruct struct {
 		rcCCS *ResourceConfig
 		cc    *CgroupConfig

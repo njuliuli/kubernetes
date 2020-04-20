@@ -534,7 +534,7 @@ func TestCgroupCPUSetReadPod(t *testing.T) {
 				ccs:         ccsFake,
 				pod:         testGeneratePodUIDAndNamespace("1", namespace),
 				expRC: &ResourceConfig{
-					CpusetCpus: &cpusDedicatedFake,
+					CpusetCpus: testCopyString(cpusDedicatedFake),
 				},
 				expIsTracked: true,
 			},
@@ -550,7 +550,7 @@ func TestCgroupCPUSetReadPod(t *testing.T) {
 				ccs:         ccsFake,
 				pod:         testGeneratePodUIDAndNamespace("2", namespace),
 				expRC: &ResourceConfig{
-					CpusetCpus: &cpusReservedFake,
+					CpusetCpus: testCopyString(cpusReservedFake),
 				},
 				expIsTracked: true,
 			},
@@ -566,7 +566,7 @@ func TestCgroupCPUSetReadPod(t *testing.T) {
 				ccs:         ccsFake,
 				pod:         testGeneratePodUIDAndNamespace("2", namespace),
 				expRC: &ResourceConfig{
-					CpusetCpus: &cpusSharedFake,
+					CpusetCpus: testCopyString(cpusSharedFake),
 				},
 				expIsTracked: true,
 			},
@@ -575,7 +575,7 @@ func TestCgroupCPUSetReadPod(t *testing.T) {
 				ccs:         ccsFake,
 				pod:         testGeneratePodUIDAndNamespace("3", namespace),
 				expRC: &ResourceConfig{
-					CpusetCpus: &cpusSharedFake,
+					CpusetCpus: testCopyString(cpusSharedFake),
 				},
 				expIsTracked: false,
 			},
@@ -587,7 +587,7 @@ func TestCgroupCPUSetReadPod(t *testing.T) {
 			description: "Pod = nil, should never happen",
 			ccs:         ccsFake,
 			expRC: &ResourceConfig{
-				CpusetCpus: &cpusSharedFake,
+				CpusetCpus: testCopyString(cpusSharedFake),
 			},
 			expIsTracked: false,
 		},
