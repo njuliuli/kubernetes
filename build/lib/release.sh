@@ -330,7 +330,7 @@ function kube::release::create_docker_images_for_server() {
     # k8s.gcr.io is the constant tag in the docker archives, this is also the default for config scripts in GKE.
     # We can use KUBE_DOCKER_REGISTRY to include and extra registry in the docker archive.
     # If we use KUBE_DOCKER_REGISTRY="k8s.gcr.io", then the extra tag (same) is ignored, see release_docker_image_tag below.
-    local -r docker_registry="k8s.gcr.io"
+    local -r docker_registry="${KUBE_DOCKER_REGISTRY}"
     # Docker tags cannot contain '+'
     local docker_tag="${KUBE_GIT_VERSION/+/_}"
     if [[ -z "${docker_tag}" ]]; then
@@ -359,7 +359,7 @@ function kube::release::create_docker_images_for_server() {
       local docker_build_path="${binary_dir}/${binary_name}.dockerbuild"
       local docker_file_path="${docker_build_path}/Dockerfile"
       local binary_file_path="${binary_dir}/${binary_name}"
-      local docker_image_tag="${docker_registry}/${binary_name}-${arch}:${docker_tag}"
+      local docker_image_tag="${docker_registry}/${binary_name}:${docker_tag}"
 
       kube::log::status "Starting docker build for image: ${binary_name}-${arch}"
       (
@@ -380,7 +380,7 @@ EOF
         "${DOCKER[@]}" build ${docker_build_opts} -q -t "${docker_image_tag}" "${docker_build_path}" >/dev/null
         # If we are building an official/alpha/beta release we want to keep
         # docker images and tag them appropriately.
-        local -r release_docker_image_tag="${KUBE_DOCKER_REGISTRY-$docker_registry}/${binary_name}-${arch}:${KUBE_DOCKER_IMAGE_TAG-$docker_tag}"
+        local -r release_docker_image_tag="${KUBE_DOCKER_REGISTRY-$docker_registry}/${binary_name}:${KUBE_DOCKER_IMAGE_TAG-$docker_tag}"
         if [[ "${release_docker_image_tag}" != "${docker_image_tag}" ]]; then
           kube::log::status "Tagging docker image ${docker_image_tag} as ${release_docker_image_tag}"
           "${DOCKER[@]}" rmi "${release_docker_image_tag}" 2>/dev/null || true

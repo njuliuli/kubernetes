@@ -42,8 +42,8 @@ source "${KUBE_ROOT}/hack/lib/init.sh"
 readonly KUBE_BUILD_IMAGE_REPO=kube-build
 readonly KUBE_BUILD_IMAGE_CROSS_TAG="$(cat "${KUBE_ROOT}/build/build-image/cross/VERSION")"
 
-readonly KUBE_DOCKER_REGISTRY="${KUBE_DOCKER_REGISTRY:-k8s.gcr.io}"
-readonly KUBE_BASE_IMAGE_REGISTRY="${KUBE_BASE_IMAGE_REGISTRY:-k8s.gcr.io}"
+readonly KUBE_DOCKER_REGISTRY="${KUBE_DOCKER_REGISTRY:-gcr.io/google-containers}"
+readonly KUBE_BASE_IMAGE_REGISTRY="${KUBE_BASE_IMAGE_REGISTRY:-gcr.io/google-containers}"
 
 # This version number is used to cause everyone to rebuild their data containers
 # and build image.  This is especially useful for automated build systems like
