@@ -825,18 +825,19 @@ func (kl *Kubelet) killPod(pod *v1.Pod, runningPod *kubecontainer.Pod, status *k
 		return fmt.Errorf("one of the two arguments must be non-nil: runningPod, status")
 	}
 
+	// TODO(li) I think a second RemovePod is not needed here, just keep it for safe
+	// Remove pod from PolicyManager, and update cgroup values accordingly.
+	policyManager := kl.containerManager.GetPolicyManager()
+	if err := policyManager.RemovePod(pod); err != nil {
+		klog.V(2).Infof("[policymanager] Failed to remove pod from policy manager: %v", err)
+	}
+
 	// Call the container runtime KillPod method which stops all running containers of the pod
 	if err := kl.containerRuntime.KillPod(pod, p, gracePeriodOverride); err != nil {
 		return err
 	}
 	if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 		klog.V(2).Infof("Failed to update QoS cgroups while killing pod: %v", err)
-	}
-
-	// Remove pod from PolicyManager, and update cgroup values accordingly.
-	policyManager := kl.containerManager.GetPolicyManager()
-	if err := policyManager.RemovePod(pod); err != nil {
-		klog.V(2).Infof("[policymanager] Failed to remove pod from policy manager: %v", err)
 	}
 
 	return nil
@@ -1711,6 +1712,14 @@ func (kl *Kubelet) cleanupOrphanedPodCgroups(cgroupPods map[types.UID]cm.CgroupN
 		// if the pod is in the running set, its not a candidate for cleanup
 		if podSet.Has(string(uid)) {
 			continue
+		}
+
+		// Remove pod from PolicyManager, and update cgroup values accordingly.
+		if pod, found := kl.podManager.GetPodByUID(uid); found {
+			policyManager := kl.containerManager.GetPolicyManager()
+			if err := policyManager.RemovePod(pod); err != nil {
+				klog.V(2).Infof("[policymanager] Failed to remove pod from policy manager: %v", err)
+			}
 		}
 
 		// If volumes have not been unmounted/detached, do not delete the cgroup
