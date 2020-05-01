@@ -22,18 +22,22 @@ def replaceLine(version, filename, checksum):
     return
 
 
-def main(param):
-    if len(param) > 0:
-        version = param[0]
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        version = sys.argv[1]
     else:
         version = "v1.17.10"
+
+    # cache directory will be removed after host reboot
+    subprocess.run(["mkdir", "-p", "{}/images".format(DOWNLOAD_CACHE_DIR)])
 
     for binary in ["kubelet", "kubectl", "kubeadm"]:
         # move file
         fFrom = "{}/_output/release-stage/server/linux-amd64/kubernetes/server/bin/{}".format(
             KUBE_ROOT, binary)
         fTo = "{}/{}-{}-amd64".format(DOWNLOAD_CACHE_DIR, binary, version)
-        subprocess.run(["rsync", "-au", fFrom, fTo])
+        subprocess.run(["rsync", "-a", fFrom, fTo])
+        subprocess.run(["chmod", "755", fTo])
         # get sha256 checksum
         result = subprocess.run(
             ["sha256sum", fTo], check=True, stdout=subprocess.PIPE)
@@ -46,10 +50,5 @@ def main(param):
             KUBE_ROOT, image)
         fTo = "{}/images/gcr.io_google-containers_{}_{}.tar".format(
             DOWNLOAD_CACHE_DIR, image, version)
-        subprocess.run(["rsync", "-au", fFrom, fTo])
-
-    return
-
-
-if __name__ == '__main__':
-    main(sys.argv[1:])
+        subprocess.run(["rsync", "-a", fFrom, fTo])
+        subprocess.run(["chmod", "755", fTo])
