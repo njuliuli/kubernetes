@@ -44,7 +44,9 @@ func getPodPolicy(pod *v1.Pod) string {
 }
 
 type policyManagerImpl struct {
-	// Protect the entire PolicyManager, including any Cgroup.
+	// Protect the entire PolicyManager,
+	// including all external calls for all read or write on Cgroup,
+	// making PolicyManager atomic.
 	// TODO(li) I should write some tests to confirm thread-safe for exported methods.
 	mutex sync.Mutex
 
@@ -106,6 +108,9 @@ func NewPolicyManager(newCgroupCPUCFS typeNewCgroupCPUCFS,
 func (pm *policyManagerImpl) Start(activePodsFunc ActivePodsFunc) (rerr error) {
 	klog.Infof("[policymanager] Start policyManagerImpl, %+v", pm)
 
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+
 	if err := pm.cgroupCPUCFS.Start(); err != nil {
 		return fmt.Errorf("fail to start cgroupCPUCFS; %q", err)
 	}
@@ -125,6 +130,9 @@ func (pm *policyManagerImpl) AddPod(pod *v1.Pod) error {
 	}
 	klog.Infof("[policymanager] AddPod on pod (%q), with policy (%q) and UID (%q)",
 		pod.Name, getPodPolicy(pod), pod.UID)
+
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
 
 	// Continue all following steps even if dependencies failed.
 	isFailed := false
@@ -244,6 +252,9 @@ func (pm *policyManagerImpl) RemovePod(pod *v1.Pod) error {
 	}
 	klog.Infof("[policymanager] RemovePod on pod (%q), with policy (%q) and UID (%q)",
 		pod.Name, getPodPolicy(pod), pod.UID)
+
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
 
 	// Continue all following steps even if dependencies failed.
 	isFailed := false
