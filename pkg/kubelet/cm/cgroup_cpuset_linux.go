@@ -224,13 +224,8 @@ func (ccs *cgroupCPUSet) ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked boo
 		return rcDefault, false
 	}
 	podUID := string(pod.UID)
-
-	// When the pod is just removed
 	if !ccs.podSet.Has(podUID) {
-		isTracked = false
-	} else {
-		// When the pod is just added
-		isTracked = true
+		return rcDefault, false
 	}
 
 	// var cpus string
@@ -245,8 +240,7 @@ func (ccs *cgroupCPUSet) ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked boo
 		cpus = ccs.cpusShared.String()
 	}
 
-	return &ResourceConfig{CpusetCpus: &cpus}, isTracked
-
+	return &ResourceConfig{CpusetCpus: &cpus}, true
 }
 
 // check if this pod belong to cpusReserved pool

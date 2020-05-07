@@ -22,6 +22,7 @@ import (
 
 	"github.com/imdario/mergo"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	cputopology "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
@@ -119,123 +120,111 @@ func (pm *policyManagerImpl) Start(activePodsFunc ActivePodsFunc) (rerr error) {
 
 func (pm *policyManagerImpl) AddPod(pod *v1.Pod) error {
 	if pod == nil {
-		return fmt.Errorf("pod not exist")
+		klog.Infof("[policymanager] AddPod on pod (nil), skip")
+		return nil
 	}
-	klog.Infof("[policymanager] add pod (%q), with policy (%q) and UID (%q)",
+	klog.Infof("[policymanager] AddPod on pod (%q), with policy (%q) and UID (%q)",
 		pod.Name, getPodPolicy(pod), pod.UID)
-
-	// A pod can only be added once, update is not supported for now
-	podUID := string(pod.UID)
-	if _, found := pm.uidToPod[podUID]; found {
-		return fmt.Errorf("pod already added to PolicyManager")
-	}
-	pm.uidToPod[podUID] = pod
 
 	// Continue all following steps even if dependencies failed.
 	isFailed := false
 
-	// Write to some Cgroup according to per-task policy,
-	// then read the current cgroup values from them.
-	switch getPodPolicy(pod) {
-	// For those policies, add pod to all Cgroup.
-	case policyDefault, policyIsolated, policyCPUCFS:
-		if err := pm.addPodAllCgroup(pod); err != nil {
-			klog.Infof("[policymanager] AddPod fails with error\n %v", err)
-			isFailed = true
+	// Update PolicyManager to the current state of runtime.
+	uidToRemove, podToAdd := pm.getPodsForAdd(pod)
+	if err := pm.update(uidToRemove, podToAdd); err != nil {
+		klog.Infof("[policymanager] update fails with error\n %v", err)
+		isFailed = true
+	}
+
+	if err := pm.updateToHost(); err != nil {
+		klog.Infof("[policymanager] updateToHost fails with error\n %v", err)
+		isFailed = true
+	}
+
+	if isFailed {
+		return fmt.Errorf("AddPod fails with errors above")
+	}
+	return nil
+}
+
+// Get pods to update in PolicyManager for AddPod().
+// Since sometimes errors prevent kubelet to completing lifecycle of a pod,
+// then global state in PolicyManager will be different from actual state.
+// For example, kubelet may recover from crash, causing losing of previous states.
+// Then when a new pod is added,
+// there are pods other than this new pod should be updated in PolicyManager.
+func (pm *policyManagerImpl) getPodsForAdd(pod *v1.Pod) (uidToRemove sets.String, podToAdd map[string]*v1.Pod) {
+	activePods := pm.activePodsFunc()
+
+	// Remove all pods in PolicyManager that are not active
+	uidToRemove = sets.NewString()
+	for podUID := range pm.uidToPod {
+		if !pm.isUIDInPodArray(podUID, activePods) {
+			uidToRemove.Insert(podUID)
 		}
-	default:
-		return fmt.Errorf("policy (%q) is not supported", getPodPolicy(pod))
 	}
 
-	if err := pm.updateToHost(pod, true); err != nil {
-		klog.Infof("[policymanager] AddPod fails with error\n %v", err)
-		isFailed = true
+	podToAdd = make(map[string]*v1.Pod)
+	// Add all active pods to PolicyManager that are not already inside
+	// Note this pod not added if not in activePods, when cgroup path may not exit
+	for _, p := range activePods {
+		if _, found := pm.uidToPod[string(p.UID)]; !found {
+			podToAdd[string(p.UID)] = p
+		}
 	}
 
-	if isFailed {
-		return fmt.Errorf("per-task policy AddPod failed for reasons above")
-	}
-
-	return nil
+	return uidToRemove, podToAdd
 }
 
-// addPodAllCgroup add pod to all Cgroup for cgroup values management
-func (pm *policyManagerImpl) addPodAllCgroup(pod *v1.Pod) error {
-	isFailed := false
-	// For pod-local Cgroup
-	if err := pm.cgroupCPUCFS.AddPod(pod); err != nil {
-		klog.Infof("[policymanager] add to cgroupCPUCFS fails with error\n %v", err)
-		isFailed = true
-	}
-
-	// For host-global Cgroup
-	if err := pm.cgroupCPUSet.AddPod(pod); err != nil {
-		klog.Infof("[policymanager] add to cgroupCPUSet fails with error\n %v", err)
-		isFailed = true
-	}
-
-	if isFailed {
-		return fmt.Errorf("addPodAllCgroup failed for reasons above")
-	}
-
-	return nil
-}
-
-// updateToHost read pod from all Cgroup
-// TODO(li) For now, there are cases when adding pod to Cgroup fails,
+// updateToHost read all Cgroup and then write to the host.
+// TODO(li) There are cases when adding pod to Cgroup returns errors,
 // such as, for CPUSet, pod is too large or dedicated number is 0,
-// for CPUCFS, mode is unknown.
-// But in those cases, the failed pod is tracked,
-// and default value will be returned in the next writeHost step.
-func (pm *policyManagerImpl) updateToHost(podUpdated *v1.Pod, isAdded bool) error {
+// For now, the failed pod is still added,
+// and the default value (cpusShared for CPUSet) will be written to host.
+func (pm *policyManagerImpl) updateToHost() error {
 	pcm := pm.newPodContainerManager()
-	podToCC := make(map[*v1.Pod]*CgroupConfig)
-	for _, pod := range pm.activePodsFunc() {
-		cgroupName, _ := pcm.GetPodContainerName(pod)
-		podToCC[pod] = &CgroupConfig{
-			Name:               cgroupName,
-			ResourceParameters: &ResourceConfig{},
-		}
-	}
 
-	if _, found := podToCC[podUpdated]; !found {
-		return fmt.Errorf("Pod just updated is not in activePodsFunc()")
-	}
-
+	// Continue all following steps even if dependencies failed.
 	isFailed := false
-	// For pod-local Cgroup
-	rc := podToCC[podUpdated].ResourceParameters
-	resourceConfig, isTracked := pm.cgroupCPUCFS.ReadPod(podUpdated)
-	if isTracked != isAdded {
-		klog.Infof("[policymanager] cgroupCPUCFS, pod isAdded (%v) but isTracked (%v)",
-			isAdded, isTracked)
-		isFailed = true
-	}
-	if err := mergo.Merge(rc, resourceConfig); err != nil {
-		klog.Infof("[policymanager] cgroupCPUCFS, fails in merging two ResourceConfig\n %+v\n %+v",
-			rc, resourceConfig)
-		isFailed = true
-	}
 
-	// For host-global Cgroups
-	for pod := range podToCC {
-		rc = podToCC[pod].ResourceParameters
-		resourceConfig, isTracked := pm.cgroupCPUSet.ReadPod(pod)
-		if pod == podUpdated && isTracked != isAdded {
-			klog.Infof("[policymanager] cgroupCPUSet, pod isAdded (%v) but isTracked (%v)",
-				isAdded, isTracked)
+	// Update all pods tracked by PolicyManager
+	for _, pod := range pm.uidToPod {
+		resourceConfig := &ResourceConfig{}
+
+		// Read all cgroup values from all Cgroups
+		rc, isTracked := pm.cgroupCPUCFS.ReadPod(pod)
+		if !isTracked {
+			klog.Infof("[policymanager] cgroupCPUCFS, pod not added yet")
 			isFailed = true
 		}
-		if err := mergo.Merge(rc, resourceConfig); err != nil {
+		// When resourceConfig and rc have non-zero value in the same field,
+		// the only in resourceConfig is kept.
+		// But this should never happens,
+		// as different Cgroup manage different fields of ResourceConfig.
+		if err := mergo.Merge(resourceConfig, rc); err != nil {
 			klog.Infof("[policymanager] cgroupCPUCFS, fails in merging two ResourceConfig\n %+v\n %+v",
-				rc, resourceConfig)
+				resourceConfig, rc)
 			isFailed = true
 		}
-	}
 
-	// Write to host
-	for _, cc := range podToCC {
-		if err := pm.cgroupManager.Update(cc); err != nil {
+		rc, isTracked = pm.cgroupCPUSet.ReadPod(pod)
+		if !isTracked {
+			klog.Infof("[policymanager] cgroupCPUSet, pod not added yet")
+			isFailed = true
+		}
+		if err := mergo.Merge(resourceConfig, rc); err != nil {
+			klog.Infof("[policymanager] cgroupCPUSet, fails in merging two ResourceConfig\n %+v\n %+v",
+				resourceConfig, rc)
+			isFailed = true
+		}
+
+		// Write to host
+		cgroupName, _ := pcm.GetPodContainerName(pod)
+		cgroupConfig := &CgroupConfig{
+			Name:               cgroupName,
+			ResourceParameters: resourceConfig,
+		}
+		if err := pm.cgroupManager.Update(cgroupConfig); err != nil {
 			klog.Infof("[policymanager] CgroupManager.Update() fails with error (%v)",
 				err)
 			isFailed = true
@@ -245,65 +234,116 @@ func (pm *policyManagerImpl) updateToHost(podUpdated *v1.Pod, isAdded bool) erro
 	if isFailed {
 		return fmt.Errorf("updateToHost failed for reasons above")
 	}
-
 	return nil
 }
 
 func (pm *policyManagerImpl) RemovePod(pod *v1.Pod) error {
 	if pod == nil {
-		return fmt.Errorf("pod not exist")
+		klog.Infof("[policymanager] RemovePod on pod (nil), skip")
+		return nil
 	}
-	klog.Infof("[policymanager] remove pod (%q) with UID (%q)",
-		pod.Name, pod.UID)
-
-	podUID := string(pod.UID)
-	if _, found := pm.uidToPod[podUID]; !found {
-		return fmt.Errorf("pod not added to PolicyManager yet")
-	}
-	delete(pm.uidToPod, podUID)
+	klog.Infof("[policymanager] RemovePod on pod (%q), with policy (%q) and UID (%q)",
+		pod.Name, getPodPolicy(pod), pod.UID)
 
 	// Continue all following steps even if dependencies failed.
 	isFailed := false
 
-	// Skip unknow policy, although can check all Cgroup anyway
-	switch getPodPolicy(pod) {
-	case policyDefault, policyIsolated, policyCPUCFS:
-		if err := pm.removeAllCgroup(podUID); err != nil {
-			klog.Infof("[policymanager] RemovePod fails with error\n %v", err)
-			isFailed = true
-		}
-	default:
-		return fmt.Errorf("policy (%q) is not supported", getPodPolicy(pod))
+	// Update PolicyManager
+	uidToRemove, podToAdd := pm.getPodsForRemove(pod)
+	if err := pm.update(uidToRemove, podToAdd); err != nil {
+		klog.Infof("[policymanager] update fails with error\n %v", err)
+		isFailed = true
 	}
 
-	if err := pm.updateToHost(pod, false); err != nil {
-		klog.Infof("[policymanager] RemovePod fails with error\n %v", err)
+	if err := pm.updateToHost(); err != nil {
+		klog.Infof("[policymanager] updateToHost fails with error\n %v", err)
 		isFailed = true
 	}
 
 	if isFailed {
-		return fmt.Errorf("RemovePod failed for reasons above")
+		return fmt.Errorf("RemovePod fails with errors above")
 	}
-
 	return nil
 }
 
-func (pm *policyManagerImpl) removeAllCgroup(podUID string) error {
-	isFailed := false
-	// For pod-local Cgroup
-	if err := pm.cgroupCPUCFS.RemovePod(podUID); err != nil {
-		klog.Infof("[policymanager] remove from cgroupCPUCFS fails with error\n %v", err)
-		isFailed = true
+// Get pods to update in PolicyManager for AddPod()
+func (pm *policyManagerImpl) getPodsForRemove(pod *v1.Pod) (uidToRemove sets.String, podToAdd map[string]*v1.Pod) {
+	activePods := pm.activePodsFunc()
+
+	uidToRemove = sets.NewString()
+	// Remove this pod if exists, which may or may not in activePods
+	if _, found := pm.uidToPod[string(pod.UID)]; found {
+		uidToRemove.Insert(string(pod.UID))
+	}
+	// Remove all pods in PolicyManager that are not active
+	for podUID := range pm.uidToPod {
+		if !pm.isUIDInPodArray(podUID, activePods) {
+			uidToRemove.Insert(podUID)
+		}
 	}
 
-	// For host-global Cgroup
-	if err := pm.cgroupCPUSet.RemovePod(podUID); err != nil {
-		klog.Infof("[policymanager] remove from cgroupCPUSet fails with error\n %v", err)
-		isFailed = true
+	// Add all active pods to PolicyManager that are not already inside
+	podToAdd = make(map[string]*v1.Pod)
+	for _, p := range activePods {
+		// Exclude the current pod that is to be removed
+		if _, found := pm.uidToPod[string(p.UID)]; !found && p.UID != pod.UID {
+			podToAdd[string(p.UID)] = p
+		}
+	}
+
+	return uidToRemove, podToAdd
+}
+
+// check if the given podUID match any active pods
+func (pm *policyManagerImpl) isUIDInPodArray(podUID string, podArray []*v1.Pod) bool {
+	for _, pod := range podArray {
+		if string(pod.UID) == podUID {
+			return true
+		}
+	}
+	return false
+}
+
+// Update is used to udpate the Cgroups in PolicyManager
+func (pm *policyManagerImpl) update(uidToRemove sets.String, podToAdd map[string]*v1.Pod) error {
+	// Continue all following steps even if dependencies failed.
+	isFailed := false
+
+	for podUID := range uidToRemove {
+		// Remove from PolicyManager even if some Cgroup fails
+		delete(pm.uidToPod, podUID)
+		klog.Infof("[policymanager] remove pod uid (%q)", podUID)
+
+		if err := pm.cgroupCPUCFS.RemovePod(podUID); err != nil {
+			klog.Infof("[policymanager] remove from cgroupCPUCFS fails with error\n %v", err)
+			isFailed = true
+		}
+		if err := pm.cgroupCPUSet.RemovePod(podUID); err != nil {
+			klog.Infof("[policymanager] remove from cgroupCPUSet fails with error\n %v", err)
+			isFailed = true
+		}
+	}
+
+	for podUID, pod := range podToAdd {
+		// Add to PolicyManager even if some Cgroup fails
+		pm.uidToPod[podUID] = pod
+		klog.Infof("[policymanager] add pod (%q), uid (%q)",
+			pod.Name, podUID)
+
+		// The per-task policy is implemented at each Cgroup.
+		// For example, when a policy is not supported by a Cgroup, it returns error.
+		if err := pm.cgroupCPUCFS.AddPod(pod); err != nil {
+			klog.Infof("[policymanager] add to cgroupCPUCFS fails with error\n %v", err)
+			isFailed = true
+		}
+		if err := pm.cgroupCPUSet.AddPod(pod); err != nil {
+			klog.Infof("[policymanager] add to cgroupCPUSet fails with error\n %v", err)
+			isFailed = true
+		}
 	}
 
 	if isFailed {
-		return fmt.Errorf("removeAllCgroup failed for reasons above")
+		return fmt.Errorf("update fails with errors above")
 	}
 	return nil
 }

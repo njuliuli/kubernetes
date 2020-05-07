@@ -255,7 +255,6 @@ func (ccc *cgroupCPUCFS) ReadPod(pod *v1.Pod) (rc *ResourceConfig, isTracked boo
 		return rcDefault, false
 	}
 	podUID := string(pod.UID)
-
 	if !ccc.podSet.Has(podUID) {
 		return rcDefault, false
 	}
